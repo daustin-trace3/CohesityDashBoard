@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bot, Sparkles,
-  Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity, Crosshair, Waypoints, LayoutGrid, ChevronDown, HeartPulse, Layers, ChevronLeft,
+  Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity, Crosshair, Waypoints, LayoutGrid, ChevronDown, HeartPulse, Layers,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import GlobalSearch from './GlobalSearch';
@@ -36,7 +36,6 @@ const opsNavGroups = [{
     { label: 'App Services', route: '/ops/app-status', icon: Layers, isActive: p => p.startsWith('/ops/app-status'), permission: 'cohesity:*:view' },
     { label: 'Server 360', route: '/ops/server360', icon: Crosshair, isActive: p => p.startsWith('/ops/server360'), permission: 'cohesity:*:view' },
     { label: 'Topology', route: '/ops/topology', icon: Waypoints, isActive: p => p.startsWith('/ops/topology'), permission: 'cohesity:*:view' },
-    { label: 'Custom Dashboards', route: '/ops/dashboards', icon: LayoutGrid, isActive: p => p.startsWith('/ops/dashboards'), permission: 'cohesity:*:view', requiresCustomDashboards: true },
   ],
 }];
 
@@ -75,7 +74,6 @@ export default function Layout() {
   // Pure/NetApp tabs stay hidden until enabled in Settings → Platforms.
   const [enabledPlatformIds, setEnabledPlatformIds] = useState(['cohesity']);
   // Custom Dashboards ships dark — nav item hidden until enabled in Settings → Platforms.
-  const [customDashboardsEnabled, setCustomDashboardsEnabled] = useState(false);
   const [switcherMode, setSwitcherMode] = useState(getSwitcherMode);
   // Collapsible nav groups: {label: bool} open-state, persisted per platform.
   const [openGroups, setOpenGroups] = useState({});
@@ -202,15 +200,13 @@ export default function Layout() {
     return () => { cancelled = true; };
   }, [isLogicmonitor, pathname]);
 
-  // Header services row: while the browser is on a LogicMonitor page the platform
-  // tabs give way to one tab per picked service. Gate on the real pathname, since
+  // Standing services row: while the browser is on a LogicMonitor page, one button
+  // per picked service shows under the header in every switcher mode. Gate on the real pathname, since
   // navPath and isLogicmonitor fall back to the remembered platform on /admin.
   const onLmPage = pathname === '/logicmonitor' || pathname.startsWith('/logicmonitor/');
   const lmServices = useLmServices(onLmPage);
-  const [showPlatformsRow, setShowPlatformsRow] = useState(false);
-  useEffect(() => { if (!onLmPage) setShowPlatformsRow(false); }, [onLmPage]);
   const activeServiceId = onLmPage ? (pathname.match(/^\/logicmonitor\/services\/([^/]+)/)?.[1] ?? null) : null;
-  const servicesRowVisible = switcherMode === 'tabs' && onLmPage && !showPlatformsRow && lmServices.length > 0;
+  const servicesRowVisible = onLmPage && lmServices.length > 0;
 
   const visiblePlatforms = [OPS_ENTRY, ...platforms.filter(p => enabledPlatformIds.includes(p.id) && (authLoading || hasPermission(`${p.id}:*:view`)))];
   const pathPlatformId = (pathname.startsWith('/admin') || pathname.startsWith('/login'))
@@ -514,7 +510,6 @@ export default function Layout() {
   useEffect(() => {
     const loadPlatforms = () => client.get('/settings')
       .then(r => {
-        setCustomDashboardsEnabled(!!r.data.featureCustomDashboardsEnabled);
         return r;
       })
       .then(r => setEnabledPlatformIds([
@@ -565,7 +560,6 @@ export default function Layout() {
       items: group.items.filter(item =>
         (!item.requiresAi || aiEnabled)
         && (!item.requiresFamily || !lmFamiliesOff.has(item.requiresFamily))
-        && (!item.requiresCustomDashboards || customDashboardsEnabled)
         && (authLoading || hasPermission(requiredNavPermission(navPlatformKey, item)))),
     }))
     .filter(group => group.items.length > 0);
@@ -815,21 +809,12 @@ export default function Layout() {
           )}
         </header>
 
-        {/* Vendor platform tabs — hidden entirely while Cohesity is the only enabled platform */}
-        {multiPlatform && switcherMode === 'tabs' && (
+        <LicenseExpiryBar />
+
+        {servicesRowVisible && (
           <div className="flex items-center gap-1.5 px-5 pt-4 pb-1 flex-shrink-0">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint mr-2">{servicesRowVisible ? 'Services' : 'Platform'}</span>
-            {servicesRowVisible ? (
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint mr-2">Services</span>
             <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 min-w-0 overflow-x-auto" role="group" aria-label="LogicMonitor services">
-              <button
-                type="button"
-                onClick={() => setShowPlatformsRow(true)}
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer text-ink-muted hover:text-ink flex-shrink-0"
-              >
-                <ChevronLeft size={13} />
-                Platforms
-              </button>
-              <span className="w-px h-4 bg-cohesity-border flex-shrink-0" aria-hidden="true" />
               {lmServices.map(s => {
                 const active = s.serviceId === activeServiceId;
                 const state = s.state || 'unknown';
@@ -839,7 +824,7 @@ export default function Layout() {
                   <button
                     key={s.serviceId}
                     type="button"
-                    onClick={() => { setShowPlatformsRow(false); navigate(`/logicmonitor/services/${encodeURIComponent(s.serviceId)}`); }}
+                    onClick={() => navigate(`/logicmonitor/services/${encodeURIComponent(s.serviceId)}`)}
                     aria-current={active ? 'page' : undefined}
                     aria-label={`${s.label}, ${word}`}
                     title={`${s.label}: ${word} (${c.crit || 0} failed, ${c.warn || 0} degraded, ${c.ok || 0} ok of ${c.total || 0})`}
@@ -853,27 +838,6 @@ export default function Layout() {
                 );
               })}
             </div>
-            ) : (
-            <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1">
-              {visiblePlatforms.map(p => {
-                const active = isActivePlatform(p.id, pathname);
-                return (
-                  <button
-                    key={p.id}
-                    type="button"
-                    aria-current={active ? 'page' : undefined}
-                    onClick={() => { setShowPlatformsRow(false); navigate(p.route); }}
-                    className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer ${
-                      active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
-                    }`}
-                  >
-                    <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: p.color, boxShadow: active ? `0 0 6px ${p.color}99` : 'none' }} />
-                    {p.label}
-                  </button>
-                );
-              })}
-            </div>
-            )}
           </div>
         )}
 

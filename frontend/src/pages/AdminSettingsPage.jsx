@@ -40,7 +40,6 @@ export default function AdminSettingsPage() {
   const intelAlias = section === undefined ? (params.get('tab') || 'provider') : INTEL_ALIASES[section];
   const tab = LOCAL_SECTIONS.includes(section) ? section : 'intelligence';
   // Platform enable/disable moved to the merged Platforms page (/admin/plugins).
-  const [customDashboardsEnabled, setCustomDashboardsEnabled] = useState(false);
   const [switcherMode, setSwitcherModeState] = useState(getSwitcherMode);
   const [opsOverviewStyle, setOpsOverviewStyle] = useState('classic');
   const [dnsServer, setDnsServer] = useState('');
@@ -71,7 +70,6 @@ export default function AdminSettingsPage() {
       if (l.status === 'fulfilled') setLicense(l.value.data);
       if (s.status === 'fulfilled') {
         const d = s.value.data;
-        setCustomDashboardsEnabled(!!d.featureCustomDashboardsEnabled);
         setOpsOverviewStyle(d.opsOverviewStyle || 'classic');
         setDnsServer(d.dnsServer || '');
         setCohesityAlertWindowDays(d.cohesityAlertWindowDays ?? 5);
@@ -88,7 +86,6 @@ export default function AdminSettingsPage() {
     setSaving(true);
     try {
       await client.put('/settings', {
-        featureCustomDashboardsEnabled: customDashboardsEnabled,
         opsOverviewStyle,
         dnsServer,
         cohesityAlertWindowDays: Number(cohesityAlertWindowDays) || 0,
@@ -210,7 +207,7 @@ export default function AdminSettingsPage() {
           <div>
             <p className="text-sm font-bold text-ink">Features & Preferences</p>
             <p className="text-[11px] text-ink-muted">
-              Preview features, switcher style, and estate-wide preferences. Platform on/off toggles moved to the{' '}
+              Switcher style, and estate-wide preferences. Platform on/off toggles moved to the{' '}
               <Link to="/admin/plugins" className="text-brand hover:text-brand-bright">Platforms</Link> page.
             </p>
           </div>
@@ -220,19 +217,6 @@ export default function AdminSettingsPage() {
           <p className="text-gray-400 text-sm mt-4">Loading…</p>
         ) : (
           <div className="flex flex-col gap-3 mt-4">
-            <div>
-              <p className="text-xs font-semibold text-ink mb-1 mt-2">Preview features</p>
-              <label className="flex items-start gap-2.5 cursor-pointer select-none mt-1">
-                <input type="checkbox" checked={customDashboardsEnabled} onChange={e => setCustomDashboardsEnabled(e.target.checked)}
-                  className="accent-brand mt-0.5 cursor-pointer" />
-                <span className="text-xs text-ink-muted leading-relaxed">
-                  <span className="font-semibold text-ink">Custom Dashboards</span><br />
-                  Show the Custom Dashboards page under Estate and enable its APIs. Leave off while the
-                  feature is still being refined — when off it is hidden from all users.
-                </span>
-              </label>
-            </div>
-
             <div className="pt-2 border-t border-cohesity-border/60">
               <p className="text-xs font-semibold text-ink mb-1 mt-2">Ops Monitor default view</p>
               <p className="text-[11px] text-ink-muted mb-2 leading-relaxed">
@@ -257,8 +241,7 @@ export default function AdminSettingsPage() {
             <div className="pt-2 border-t border-cohesity-border/60">
               <p className="text-xs font-semibold text-ink mb-1 mt-2">Platform switcher style</p>
               <p className="text-[11px] text-ink-muted mb-2 leading-relaxed">
-                How the platform selector is presented — trial the styles and we'll keep the winner.
-                Applies immediately, saved per browser.
+                How the platform selector is presented. Saved per browser.
               </p>
               <div className="flex flex-col gap-1.5">
                 {SWITCHER_MODES.map(m => (

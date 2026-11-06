@@ -19,21 +19,24 @@ import logicmonitorLogo from '../assets/platform-logos/logicmonitor.png';
 import brocadeLogo from '../assets/platform-logos/brocade.png';
 import hypervLogo from '../assets/platform-logos/hyperv.svg';
 
-// Three experimental platform-switcher styles (dropdown | rail | grid), trialed
-// side-by-side against the original tab row. The active style is a per-browser
-// preference: localStorage 'platform-switcher-mode', picked on Global Settings.
-// Once one wins, delete the others (and this comment).
+// Platform-switcher styles. The icon rail is the default; dropdown and grid are
+// alternatives. The active style is a per-browser preference: localStorage
+// 'platform-switcher-mode', picked on Global Settings. A stored 'tabs' (the
+// retired tab row) is mapped to 'rail' and written back.
 
 export const SWITCHER_MODES = [
-  { id: 'tabs', label: 'Tabs (original)' },
+  { id: 'rail', label: 'Icon rail (default)' },
   { id: 'dropdown', label: 'Dropdown' },
-  { id: 'rail', label: 'Icon rail' },
   { id: 'grid', label: 'Grid launcher' },
 ];
 
 export function getSwitcherMode() {
   const m = localStorage.getItem('platform-switcher-mode');
-  return SWITCHER_MODES.some(x => x.id === m) ? m : 'tabs';
+  if (SWITCHER_MODES.some(x => x.id === m)) return m;
+  if (m === 'tabs') {
+    try { localStorage.setItem('platform-switcher-mode', 'rail'); } catch { /* ignore */ }
+  }
+  return 'rail';
 }
 
 /** Rolled-up health for one platform from the /poller/status payload. */

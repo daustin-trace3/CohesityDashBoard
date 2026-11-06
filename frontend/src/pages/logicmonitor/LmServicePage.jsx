@@ -63,6 +63,13 @@ export default function LmServicePage() {
   const sites = arr(related.sitesTouched);
   const incidents = related.openIncidents || 0;
   const label = service.label || service.name;
+  const composite = service.kind === 'composite';
+  const roleMembers = arr(service.members).filter((m) => m.kind === 'role');
+  const rankOf = { failed: 0, degraded: 1, ok: 2, unknown: 3 };
+  const memberRows = subGroups.slice().sort((a, b) => (rankOf[a.state] - rankOf[b.state]) || String(a.fullPath).localeCompare(String(b.fullPath)));
+  const description = composite
+    ? `Group of ${fmtNum(memberRows.length)} groups, ${fmtNum(counts.total || 0)} devices${arr(service.reasons).length ? `. ${arr(service.reasons).join('. ')}` : ''}`
+    : `${service.fullPath || service.name} - ${fmtNum(counts.total || 0)} devices${arr(service.reasons).length ? `. ${arr(service.reasons).join('. ')}` : ''}`;
 
   return (
     <div className="animate-fade-in">
@@ -74,7 +81,7 @@ export default function LmServicePage() {
             <Badge tone={stateBadgeTone(service.state)}>{stateWord(service.state)}</Badge>
           </span>
         )}
-        description={`${service.fullPath || service.name} - ${fmtNum(counts.total || 0)} devices${arr(service.reasons).length ? `. ${arr(service.reasons).join('. ')}` : ''}`}>
+        description={description}>
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>
@@ -89,12 +96,55 @@ export default function LmServicePage() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.4fr)] mb-4">
-        <Panel title="Sub-groups" icon={Layers}>
-          <div className="max-h-[60vh] overflow-y-auto">
-            <GroupTree nodes={treeNodes} rootId={service.id} worstFirst loadDevices={loadTreeDevices}
-              onSelect={() => {}} onOpenDevice={(d) => setDevice({ id: d.id, sourceId: d.sourceId })} />
-          </div>
-        </Panel>
+        {composite ? (
+          <Panel title="Members" icon={Layers}>
+            <div className="max-h-[60vh] overflow-y-auto">
+              {memberRows.length === 0 && roleMembers.length === 0 ? (
+                <p className="text-sm text-ink-muted py-4 text-center">No group matches the members of this service yet.</p>
+              ) : null}
+              {roleMembers.map((m, i) => (
+                <p key={`role-${i}`} className="text-xs text-ink py-1.5 border-b border-cohesity-border">
+                  {`Role: ${m.role} (${fmtNum(m.matched || 0)} devices)`}
+                  {m.sourceId != null ? <span className="text-ink-faint">{` - portal ${m.sourceId}`}</span> : null}
+                </p>
+              ))}
+              {memberRows.length > 0 && (
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-ink-faint">
+                      <th className="py-1 pr-2 font-medium">Group</th>
+                      <th className="py-1 px-1 font-medium text-right">Failed</th>
+                      <th className="py-1 px-1 font-medium text-right">Degraded</th>
+                      <th className="py-1 pl-1 font-medium text-right">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {memberRows.map((n) => (
+                      <tr key={n.id} className="border-t border-cohesity-border">
+                        <td className="py-1.5 pr-2">
+                          <span className="inline-flex items-center gap-2 min-w-0">
+                            <StateDot state={n.state} size={10} />
+                            <span className="truncate" title={arr(n.reasons).join('. ') || stateWord(n.state)}>{n.fullPath}</span>
+                          </span>
+                        </td>
+                        <td className="py-1.5 px-1 text-right tnum">{fmtNum(n.counts?.crit || 0)}</td>
+                        <td className="py-1.5 px-1 text-right tnum">{fmtNum(n.counts?.warn || 0)}</td>
+                        <td className="py-1.5 pl-1 text-right tnum">{fmtNum(n.counts?.total || 0)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </Panel>
+        ) : (
+          <Panel title="Sub-groups" icon={Layers}>
+            <div className="max-h-[60vh] overflow-y-auto">
+              <GroupTree nodes={treeNodes} rootId={service.id} worstFirst loadDevices={loadTreeDevices}
+                onSelect={() => {}} onOpenDevice={(d) => setDevice({ id: d.id, sourceId: d.sourceId })} />
+            </div>
+          </Panel>
+        )}
         <Panel title="Devices" icon={Layers}>
           <GroupDevicesTable rows={devices} lastCol="site" showCsv csvName={`${label}-devices`}
             onOpen={(d) => setDevice({ id: d.id, sourceId: d.sourceId })} />

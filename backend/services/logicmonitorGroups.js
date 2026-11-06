@@ -141,6 +141,7 @@ function computeSourceStates(db, sourceId, nowMs) {
       name: d.name,
       displayName: d.display_name,
       siteKey: d.site_key || null,
+      role: d.role || null,
       sourceId,
       deviceId: d.lm_device_id,
       openCritAlerts: al.crit.length,
@@ -173,6 +174,33 @@ function failPct() {
 }
 function failOnNetworkDead() {
   try { return lmIssues().getThreshold('lm_group_fail_on_network_dead') === 1; } catch { return true; }
+}
+
+/** Roll a set of device keys up to { counts, state, reasons } with the group rule (fail share, network-dead override). */
+function rollup(keys, states, pct, netRule) {
+  let crit = 0; let warn = 0; let ok = 0; let netDead = null;
+  for (const k of keys) {
+    const s = states.get(k);
+    if (!s) continue;
+    if (s.state === 'failed') { crit += 1; if (!netDead && s.networkCritical) netDead = s; } else if (s.state === 'degraded') warn += 1; else ok += 1;
+  }
+  const total = crit + warn + ok;
+  const share = total ? (crit / total) * 100 : 0;
+  const shareTxt = `${Math.round(share * 10) / 10}%`;
+  let state;
+  const reasons = [];
+  if (total === 0) state = 'unknown';
+  else if (share >= pct || (netRule && netDead)) {
+    state = 'failed';
+    if (netRule && netDead) reasons.push(`dead network device ${netDead.displayName || netDead.name}`);
+    reasons.push(share >= pct ? `${crit} of ${total} failed (${shareTxt}, red line ${pct}%)` : `${crit} of ${total} failed (${shareTxt}, under the red line ${pct}%)`);
+    if (warn) reasons.push(`${warn} degraded`);
+  } else if (crit + warn > 0) {
+    state = 'degraded';
+    if (crit) reasons.push(`${crit} of ${total} failed (${shareTxt}, under the red line ${pct}%)`);
+    if (warn) reasons.push(`${warn} degraded`);
+  } else state = 'ok';
+  return { counts: { crit, warn, ok, total }, state, reasons: reasons.slice(0, 3) };
 }
 
 function computeSourceTree(db, sourceId, states, pct, netRule) {
@@ -228,27 +256,7 @@ function computeSourceTree(db, sourceId, states, pct, netRule) {
     const id = `${sourceId}:${r.lm_group_id}`;
     const keys = [...(members.get(r.lm_group_id) || [])];
     const dkeys = [...(direct.get(r.lm_group_id) || [])];
-    let crit = 0; let warn = 0; let ok = 0; let netDead = null;
-    for (const k of keys) {
-      const s = states.get(k);
-      if (s.state === 'failed') { crit += 1; if (!netDead && s.networkCritical) netDead = s; } else if (s.state === 'degraded') warn += 1; else ok += 1;
-    }
-    const total = keys.length;
-    const share = total ? (crit / total) * 100 : 0;
-    const shareTxt = `${Math.round(share * 10) / 10}%`;
-    let state;
-    const reasons = [];
-    if (total === 0) state = 'unknown';
-    else if (share >= pct || (netRule && netDead)) {
-      state = 'failed';
-      if (netRule && netDead) reasons.push(`dead network device ${netDead.displayName || netDead.name}`);
-      reasons.push(share >= pct ? `${crit} of ${total} failed (${shareTxt}, red line ${pct}%)` : `${crit} of ${total} failed (${shareTxt}, under the red line ${pct}%)`);
-      if (warn) reasons.push(`${warn} degraded`);
-    } else if (crit + warn > 0) {
-      state = 'degraded';
-      if (crit) reasons.push(`${crit} of ${total} failed (${shareTxt}, under the red line ${pct}%)`);
-      if (warn) reasons.push(`${warn} degraded`);
-    } else state = 'ok';
+    const { counts, state, reasons } = rollup(keys, states, pct, netRule);
     const par = parentOf(r);
     const parentId = par && !isRoot(par) ? par.lm_group_id : null;
     const lastSeg = String(r.full_path || '').split('/').filter(Boolean).pop();
@@ -263,9 +271,9 @@ function computeSourceTree(db, sourceId, states, pct, netRule) {
       depth: depthOf(r),
       directDevices: dkeys.length,
       lmHosts: r.num_of_hosts == null ? null : Number(r.num_of_hosts),
-      counts: { crit, warn, ok, total },
+      counts,
       state,
-      reasons: reasons.slice(0, 3),
+      reasons,
     });
     memberKeys.set(id, keys);
     directKeys.set(id, dkeys);
@@ -341,35 +349,256 @@ function deriveLabel(name) {
   }).join(' ');
 }
 
-function readPicks() {
+const ROLE_FALLBACK = ['switch', 'router', 'firewall', 'load-balancer', 'wireless', 'server', 'storage', 'other'];
+const ROLE_LABEL = {
+  switch: 'Switch', router: 'Router', firewall: 'Firewall', 'load-balancer': 'Load balancer', wireless: 'Wireless', server: 'Server', storage: 'Storage', other: 'Other',
+};
+/** The ICC device role vocabulary (lm_devices.role, assigned by classifyRole in logicmonitorApi.js). */
+function roleVocabulary() {
+  try { const r = require('./logicmonitorApi').ROLES; if (Array.isArray(r) && r.length) return r.slice(); } catch { /* fall back */ }
+  return ROLE_FALLBACK.slice();
+}
+
+const MAX_MEMBERS = 32;
+const PATTERN_RE = /^[A-Za-z0-9 \-_.()*/]+$/;
+const ID_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+
+function slugify(label) {
+  const s = String(label == null ? '' : label).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/, '');
+  return s || 'service';
+}
+function uniqueId(base, used) {
+  let id = base;
+  for (let n = 2; used.has(id); n += 1) { const suf = `-${n}`; id = `${base.slice(0, 40 - suf.length)}${suf}`; }
+  used.add(id);
+  return id;
+}
+
+/** Glob on a group full path: `*` stays inside one segment, `**` crosses segments. Case-insensitive. */
+function globToRegex(pattern) {
+  let out = '';
+  const p = String(pattern);
+  for (let i = 0; i < p.length; i += 1) {
+    const c = p[i];
+    if (c === '*') {
+      if (p[i + 1] === '*') { out += '.*'; i += 1; } else out += '[^/]*';
+    } else out += c.replace(/[.+?^${}()|[\]\\/]/g, '\\$&');
+  }
+  return new RegExp(`^${out}$`, 'i');
+}
+const matchPattern = (pattern, path) => globToRegex(pattern).test(String(path || ''));
+
+const optSourceId = (v) => v === undefined || v === null;
+
+/** One member to its canonical shape, or { error }. */
+function normalizeMember(m, roles) {
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return { error: 'every member must be an object' };
+  if (m.kind === 'group') {
+    if (!Number.isInteger(m.sourceId) || m.sourceId < 1) return { error: 'sourceId must be a positive integer' };
+    if (!Number.isInteger(m.groupId) || m.groupId < 0) return { error: 'groupId must be a non-negative integer' };
+    return { member: { kind: 'group', sourceId: m.sourceId, groupId: m.groupId } };
+  }
+  if (m.kind === 'pattern' || m.kind === 'role') {
+    if (!optSourceId(m.sourceId) && (!Number.isInteger(m.sourceId) || m.sourceId < 1)) return { error: 'sourceId must be a positive integer or null' };
+    const sourceId = optSourceId(m.sourceId) ? null : m.sourceId;
+    if (m.kind === 'pattern') {
+      if (typeof m.match !== 'string' || m.match.length < 1 || m.match.length > 200) return { error: 'pattern must be 1 to 200 characters' };
+      if (!PATTERN_RE.test(m.match)) return { error: 'pattern may only use letters, digits, space, * / - _ . ( )' };
+      return { member: { kind: 'pattern', sourceId, match: m.match } };
+    }
+    if (typeof m.role !== 'string' || !roles.includes(m.role)) return { error: `role must be one of ${roles.join(', ')}` };
+    return { member: { kind: 'role', sourceId, role: m.role } };
+  }
+  return { error: 'member kind must be group, pattern or role' };
+}
+
+/**
+ * Raw array to canonical entries [{ id, label, members }]. Reads the round 14 shape
+ * ({ sourceId, groupId, label? }) as a one-group service with id "<sid>-<gid>". With strict,
+ * the first problem comes back as { error }; without it bad entries are skipped.
+ */
+function normalizeEntries(arr, { strict = false } = {}) {
+  const roles = roleVocabulary();
+  const entries = [];
+  const explicit = new Set();
+  for (const p of arr) {
+    if (!p || typeof p !== 'object' || Array.isArray(p)) { if (strict) return { error: 'every entry must be an object' }; continue; }
+    let members;
+    const legacy = p.members === undefined;
+    if (legacy) {
+      const r = normalizeMember({ kind: 'group', sourceId: p.sourceId, groupId: p.groupId }, roles);
+      if (r.error) { if (strict) return { error: r.error }; continue; }
+      members = [r.member];
+    } else {
+      if (!Array.isArray(p.members) || p.members.length < 1 || p.members.length > MAX_MEMBERS) { if (strict) return { error: `a service needs 1 to ${MAX_MEMBERS} members` }; continue; }
+      members = [];
+      let bad = null;
+      for (const m of p.members) {
+        const r = normalizeMember(m, roles);
+        if (r.error) { bad = r.error; break; }
+        members.push(r.member);
+      }
+      if (bad) { if (strict) return { error: bad }; continue; }
+    }
+    let label = null;
+    if (p.label !== undefined && p.label !== null) {
+      if (typeof p.label !== 'string' || p.label.trim().length < 1 || p.label.trim().length > 60) { if (strict) return { error: 'label must be 1 to 60 characters' }; continue; }
+      label = p.label.trim();
+    }
+    const single = members.length === 1 && members[0].kind === 'group';
+    if (label == null && !single && strict) return { error: 'label is required unless the service is one group' };
+    let id = null;
+    if (p.id !== undefined && p.id !== null) {
+      if (typeof p.id !== 'string' || !ID_RE.test(p.id)) { if (strict) return { error: 'id must be 1 to 40 characters of a-z, 0-9 and dashes' }; continue; }
+      id = p.id;
+      if (explicit.has(id)) { if (strict) return { error: `service id ${id} is used twice` }; continue; }
+      explicit.add(id);
+    }
+    const legacyId = single ? `${members[0].sourceId}-${members[0].groupId}` : null;
+    entries.push({ id, label, members, legacyId, legacy });
+  }
+  const used = new Set(explicit);
+  for (const e of entries) {
+    if (e.id) continue;
+    if ((e.legacy || e.label == null) && e.legacyId) {
+      // A round 14 entry keeps "<sid>-<gid>"; the same group twice is a duplicate id.
+      if (used.has(e.legacyId) && strict) return { error: `service id ${e.legacyId} is used twice` };
+      e.id = uniqueId(e.legacyId, used);
+    } else e.id = uniqueId(slugify(e.label || e.legacyId || 'service'), used);
+  }
+  for (const e of entries) { delete e.legacyId; delete e.legacy; }
+  return { entries };
+}
+
+function readEntries() {
   let raw;
   try { raw = getSetting(SERVICE_KEY); } catch { raw = null; }
-  const arr = parseArr(raw);
-  const out = [];
-  for (const p of arr) {
-    if (!p || !Number.isInteger(p.sourceId) || !Number.isInteger(p.groupId)) continue;
-    out.push({ sourceId: p.sourceId, groupId: p.groupId, label: typeof p.label === 'string' && p.label.trim() ? p.label.trim().slice(0, 60) : null });
-    if (out.length >= MAX_PICKS) break;
+  const arr = parseArr(raw).slice(0, MAX_PICKS);
+  return normalizeEntries(arr).entries;
+}
+
+/** Validate the stored text of lm_service_groups. '' clears. Returns an error string or null. */
+function checkServiceGroups(v) {
+  if (typeof v !== 'string') return 'must be a JSON string';
+  if (Buffer.byteLength(v) > 16 * 1024) return 'must be 16 KB or less';
+  if (!v.trim()) return null;
+  let a;
+  try { a = JSON.parse(v); } catch { return 'must be valid JSON'; }
+  if (!Array.isArray(a)) return 'must be a JSON array';
+  if (a.length > MAX_PICKS) return `must have at most ${MAX_PICKS} entries`;
+  const r = normalizeEntries(a, { strict: true });
+  return r.error || null;
+}
+
+const hide = (obj, name, value) => Object.defineProperty(obj, name, { value, enumerable: false });
+
+function memberGroupsFor(m, tree) {
+  if (m.kind === 'group') { const n = tree.node(`${m.sourceId}:${m.groupId}`); return n ? [n] : []; }
+  if (m.kind === 'pattern') {
+    const re = globToRegex(m.match);
+    return tree.nodes.filter((n) => (m.sourceId == null || n.sourceId === m.sourceId) && re.test(n.fullPath));
   }
+  return [];
+}
+function roleKeys(m, tree) {
+  const out = [];
+  for (const [k, s] of tree.states) if (s.role === m.role && (m.sourceId == null || s.sourceId === m.sourceId)) out.push(k);
   return out;
 }
 
-/** Picked groups in pick order: [{ serviceId: "3-118", label, ...node, missing }]. */
-function services(db) {
-  const picks = readPicks();
-  if (!picks.length) return [];
-  const tree = buildGroupTree(db);
-  return picks.map((p) => {
-    const serviceId = `${p.sourceId}-${p.groupId}`;
-    const node = tree.node(`${p.sourceId}:${p.groupId}`);
+function buildService(e, tree, pct, netRule) {
+  const first = e.members[0];
+  if (e.members.length === 1 && first.kind === 'group') {
+    const node = tree.node(`${first.sourceId}:${first.groupId}`);
+    const members = [{ kind: 'group', sourceId: first.sourceId, groupId: first.groupId, matched: node ? 1 : 0, label: node ? deriveLabel(node.name) : `Group ${first.groupId}` }];
     if (!node) {
-      return {
-        serviceId, label: p.label || `Group ${p.groupId}`, missing: true, state: 'unknown',
-        counts: { crit: 0, warn: 0, ok: 0, total: 0 }, sourceId: p.sourceId, groupId: p.groupId,
+      const svc = {
+        serviceId: e.id, label: e.label || `Group ${first.groupId}`, missing: true, state: 'unknown',
+        counts: { crit: 0, warn: 0, ok: 0, total: 0 }, sourceId: first.sourceId, groupId: first.groupId, kind: 'group', members, memberGroups: [],
       };
+      hide(svc, '_keys', []);
+      return svc;
     }
-    return { serviceId, label: p.label || deriveLabel(node.name), ...node, missing: false };
+    const svc = { serviceId: e.id, label: e.label || deriveLabel(node.name), ...node, missing: false, kind: 'group', members, memberGroups: [node] };
+    hide(svc, '_keys', tree.membersOf(node.id));
+    return svc;
+  }
+  const keySet = new Set();
+  const groupSeen = new Set();
+  const memberGroups = [];
+  const members = e.members.map((m) => {
+    if (m.kind === 'role') {
+      const ks = roleKeys(m, tree);
+      ks.forEach((k) => keySet.add(k));
+      return { ...m, matched: ks.length, label: `Role: ${m.role}` };
+    }
+    const nodes = memberGroupsFor(m, tree);
+    for (const n of nodes) {
+      tree.membersOf(n.id).forEach((k) => keySet.add(k));
+      if (!groupSeen.has(n.id)) { groupSeen.add(n.id); memberGroups.push(n); }
+    }
+    if (m.kind === 'group') return { ...m, matched: nodes.length, label: nodes[0] ? deriveLabel(nodes[0].name) : `Group ${m.groupId}` };
+    return { ...m, matched: nodes.length, label: m.match };
   });
+  const keys = [...keySet];
+  const r = rollup(keys, tree.states, pct, netRule);
+  const label = e.label || e.id;
+  const svc = {
+    serviceId: e.id, label, id: `svc:${e.id}`, sourceId: null, groupId: null, parentId: null, name: label, fullPath: label,
+    dynamic: false, depth: 0, directDevices: 0, ...r, missing: false, kind: 'composite', members, memberGroups,
+  };
+  hide(svc, '_keys', keys);
+  return svc;
 }
 
-module.exports = { deviceStates, buildGroupTree, services, deriveLabel, readPicks, SERVICE_KEY, MAX_PICKS, chunks };
+/**
+ * Services in setting order: [{ serviceId, label, ...node, missing, kind, members, memberGroups }].
+ * A one-group service spreads its group node (round 14 shape); a composite carries rolled-up
+ * counts and state over the union of its members' devices, sourceId/groupId null. The list has
+ * non-enumerable _tree (the group tree) and each entry _keys (distinct device keys).
+ */
+function services(db) {
+  const entries = readEntries();
+  if (!entries.length) return [];
+  const tree = buildGroupTree(db);
+  const pct = failPct();
+  const netRule = failOnNetworkDead();
+  const out = entries.map((e) => buildService(e, tree, pct, netRule));
+  hide(out, '_tree', tree);
+  return out;
+}
+
+/** Live preview for the picker: { groups, devices, sample } for a glob and/or a role. */
+function previewMembers(db, { match = null, role = null, sourceId = null } = {}) {
+  const tree = buildGroupTree(db);
+  const keys = new Set();
+  const sample = [];
+  let groups = 0;
+  if (match) {
+    for (const n of memberGroupsFor({ kind: 'pattern', sourceId, match }, tree)) {
+      groups += 1;
+      if (sample.length < 8) sample.push(n.fullPath);
+      tree.membersOf(n.id).forEach((k) => keys.add(k));
+    }
+  }
+  if (role) {
+    for (const k of roleKeys({ role, sourceId }, tree)) {
+      keys.add(k);
+      if (!match && sample.length < 8) { const s = tree.states.get(k); sample.push(s.displayName || s.name); }
+    }
+  }
+  return { groups, devices: keys.size, sample };
+}
+
+/** [{ role, label, devices }] over the stored non-stale devices, whole vocabulary. */
+function roleCounts(db) {
+  const counts = new Map();
+  for (const r of db.prepare('SELECT role, COUNT(*) AS n FROM lm_devices WHERE stale = 0 GROUP BY role').all()) counts.set(r.role, r.n);
+  return roleVocabulary().map((role) => ({ role, label: ROLE_LABEL[role] || role, devices: counts.get(role) || 0 }));
+}
+
+module.exports = {
+  deviceStates, buildGroupTree, services, deriveLabel, readEntries, readPicks: readEntries, normalizeEntries, checkServiceGroups,
+  previewMembers, roleCounts, roleVocabulary, globToRegex, matchPattern, rollup, slugify,
+  SERVICE_KEY, MAX_PICKS, MAX_MEMBERS, chunks,
+};

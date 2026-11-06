@@ -37,11 +37,7 @@ const serviceStatusRouter = require('./routes/serviceStatus');
 const opsAgentRouter = require('./routes/opsAgent');
 const estateRouter = require('./routes/estate');
 const appServicesRouter = require('./routes/appServices');
-const datasetsRouter = require('./routes/datasets');
-const userDashboardsRouter = require('./routes/userDashboards');
 const alertNotifyRouter = require('./routes/alertNotify');
-require('./services/coreDatasets').registerCoreDatasets();
-const { getSetting } = require('./services/settings');
 const authRouter = require('./routes/auth');
 const usersRouter = require('./routes/users');
 const directoryRouter = require('./routes/directory');
@@ -248,21 +244,6 @@ function createApp({ licenseGate = requireLicense } = {}) {
   app.use('/api/app-services', appServicesRouter);
   // Estate AI Advisor: cross-platform reports, reachable like /api/ops-agent.
   app.use('/api/estate', estateRouter);
-  // Custom dashboards ship dark: both mounts 404 until the feature is
-  // switched on in Global Settings → Platforms (feature_custom_dashboards_enabled).
-  const requireCustomDashboards = (req, res, next) => {
-    if (getSetting('feature_custom_dashboards_enabled') !== '1') {
-      return res.status(404).json({ error: 'Custom dashboards are not enabled.' });
-    }
-    next();
-  };
-  // Dataset catalog (custom dashboards) — per-dataset RBAC inside the handler.
-  // Must mount before the plugin dispatcher below.
-  app.use('/api/datasets', requireCustomDashboards, datasetsRouter);
-  // Saved custom dashboards — owner-scoped CRUD; widget data access is
-  // enforced per-viewer by /api/datasets at render time.
-  app.use('/api/user-dashboards', requireCustomDashboards, userDashboardsRouter);
-
   // Plugin dispatcher — resolves the registry at request time. Falls through
   // to the static routes above (which still win while the registry is empty)
   // via next() for any pluginId the registry doesn't know about.

@@ -1950,3 +1950,88 @@ describe('logicmonitor round 14 routes: groups and services', () => {
     console.log(`groups 760 nodes / 350 devices: ${ms} ms`);
   });
 });
+
+describe('logicmonitor round 15 routes: composite services', () => {
+  const API = '/api/logicmonitor';
+  let sid;
+  const putSvc = (v) => request(app).put(`${API}/config`).send({ lm_service_groups: JSON.stringify(v) });
+  beforeEach(() => {
+    wipe();
+    sid = insertSource({ name: 'Acme' });
+    ins('lm_device_groups', { source_id: sid, lm_group_id: 10, parent_id: 1, name: 'NA', full_path: 'NA' });
+    ins('lm_device_groups', { source_id: sid, lm_group_id: 11, parent_id: 10, name: 'phx_Firewalls', full_path: 'NA/phx_Firewalls' });
+    ins('lm_device_groups', { source_id: sid, lm_group_id: 12, parent_id: 1, name: 'EU', full_path: 'EU' });
+    ins('lm_device_groups', { source_id: sid, lm_group_id: 13, parent_id: 12, name: 'lon_Firewalls', full_path: 'EU/lon_Firewalls' });
+    ins('lm_device_groups', { source_id: sid, lm_group_id: 14, parent_id: 10, name: 'Core', full_path: 'NA/Core' });
+    const dev = (id, name, groups, over = {}) => ins('lm_devices', {
+      source_id: sid, lm_device_id: id, name: `10.1.0.${id}`, display_name: name, host_status: 'normal', alert_status: 'none',
+      sdt_status: 'none-none-none', group_ids_json: JSON.stringify(groups), is_network: 1, site_key: 'phx', role: 'firewall', ...over,
+    });
+    dev(301, 'phx-fw-1', [11]);
+    dev(302, 'lon-fw-1', [13], { host_status: 'dead', dead_since: sqlTs(2 * HOUR), site_key: 'lon' });
+    dev(303, 'phx-core', [14], { role: 'router' });
+    ins('lm_interfaces', { source_id: sid, lm_device_id: 302, instance_id: 9101, display_name: 'Te0/1', status_text: 'down', circuit_role: 'wan' });
+  });
+
+  it('accepts a composite, answers /services with members, memberGroups and rolled-up state', async () => {
+    const svcs = [
+      { id: 'firewalls', label: 'Firewalls', members: [{ kind: 'pattern', sourceId: null, match: '*/*_Firewalls' }, { kind: 'role', sourceId: null, role: 'firewall' }] },
+      { sourceId: sid, groupId: 14 },
+    ];
+    expect((await putSvc(svcs)).status).toBe(200);
+    const res = await request(app).get(`${API}/services`);
+    expect(res.body.services.map((s) => [s.serviceId, s.label, s.state, s.kind])).toEqual([['firewalls', 'Firewalls', 'failed', 'composite'], [`${sid}-14`, 'Core', 'ok', 'group']]);
+    const fw = res.body.services[0];
+    expect(fw.counts).toEqual({ crit: 1, warn: 0, ok: 1, total: 2 });
+    expect(fw.members).toEqual([
+      { kind: 'pattern', sourceId: null, match: '*/*_Firewalls', matched: 2, label: '*/*_Firewalls' },
+      { kind: 'role', sourceId: null, role: 'firewall', matched: 2, label: 'Role: firewall' },
+    ]);
+    expect(fw.memberGroups.map((n) => [n.fullPath, n.state])).toEqual([['EU/lon_Firewalls', 'failed'], ['NA/phx_Firewalls', 'ok']]);
+    expect(fw).not.toHaveProperty('_keys');
+  });
+
+  it('GET /services/:serviceId resolves a slug: flat member groups, merged devices, related counts', async () => {
+    await putSvc([{ id: 'firewalls', label: 'Firewalls', members: [{ kind: 'pattern', sourceId: null, match: '*/*_Firewalls' }] }]);
+    const res = await request(app).get(`${API}/services/firewalls`);
+    expect(res.status).toBe(200);
+    expect(res.body.service).toMatchObject({ serviceId: 'firewalls', label: 'Firewalls', kind: 'composite', state: 'failed' });
+    expect(res.body.subGroups.map((n) => [n.fullPath, n.depth, n.parentId])).toEqual([['EU/lon_Firewalls', 0, null], ['NA/phx_Firewalls', 0, null]]);
+    expect(res.body.devices.map((d) => [d.displayName, d.state, d.subGroup])).toEqual([['lon-fw-1', 'failed', 'lon_Firewalls'], ['phx-fw-1', 'ok', 'phx_Firewalls']]);
+    expect(res.body.related).toEqual({
+      openAlerts: { critical: 0, warning: 0 }, issuesOpen: 0, sitesTouched: ['lon', 'phx'], circuits: { total: 1, down: 1 }, openIncidents: 0,
+    });
+    expect((await request(app).get(`${API}/services/Firewalls`)).status).toBe(404);
+    expect((await request(app).get(`${API}/services/nope`)).status).toBe(404);
+  });
+
+  it('GET /services/preview counts groups and devices; /services/roles lists the vocabulary', async () => {
+    const pv = await request(app).get(`${API}/services/preview`).query({ match: '*/*_Firewalls' });
+    expect(pv.status).toBe(200);
+    expect(pv.body).toEqual({ groups: 2, devices: 2, sample: ['EU/lon_Firewalls', 'NA/phx_Firewalls'] });
+    const byRole = await request(app).get(`${API}/services/preview`).query({ role: 'router', sourceId: sid });
+    expect(byRole.body).toMatchObject({ groups: 0, devices: 1, sample: ['phx-core'] });
+    expect((await request(app).get(`${API}/services/preview`).query({ match: 'a<b' })).status).toBe(400);
+    expect((await request(app).get(`${API}/services/preview`).query({ role: 'toaster' })).status).toBe(400);
+    const roles = await request(app).get(`${API}/services/roles`);
+    expect(roles.status).toBe(200);
+    expect(roles.body.find((r) => r.role === 'firewall')).toEqual({ role: 'firewall', label: 'Firewall', devices: 2 });
+    expect(roles.body.map((r) => r.role)).toContain('load-balancer');
+  });
+
+  it('PUT /config validates composite services', async () => {
+    const m = { kind: 'role', role: 'firewall' };
+    const bad = async (v) => (await putSvc(v)).status;
+    expect(await bad([{ label: 'A', members: [{ kind: 'zone' }] }])).toBe(400);
+    expect(await bad([{ label: 'A', members: [{ kind: 'pattern', match: 'a<b' }] }])).toBe(400);
+    expect(await bad([{ label: 'A', members: [{ kind: 'role', role: 'toaster' }] }])).toBe(400);
+    expect(await bad([{ id: 'a', label: 'A', members: [m] }, { id: 'a', label: 'B', members: [m] }])).toBe(400);
+    expect(await bad([{ label: 'A', members: Array.from({ length: 33 }, () => m) }])).toBe(400);
+    expect(await bad([{ label: 'A', members: [] }])).toBe(400);
+    expect(await bad([{ members: [m] }])).toBe(400);
+    expect(await bad([{ label: 'A', members: [m] }])).toBe(200);
+    const stored = (await request(app).get(`${API}/config`)).body.lm_service_groups;
+    expect(JSON.parse(stored)[0].members).toEqual([m]);
+    expect((await request(app).get(`${API}/services`)).body.services[0].serviceId).toBe('a');
+  });
+});

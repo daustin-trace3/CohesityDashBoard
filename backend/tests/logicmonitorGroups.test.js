@@ -262,3 +262,132 @@ describe('services and labels', () => {
     expect(groups.services(db)).toEqual([]);
   });
 });
+
+describe('composite services (round 15)', () => {
+  // Two regions, each with a Firewalls group, plus a Core group; roles on the devices.
+  function estate() {
+    const sid = source();
+    group(sid, 1, 0, 'root', 'root');
+    group(sid, 10, 1, 'NA', 'NA');
+    group(sid, 11, 10, 'phx_Firewalls', 'NA/phx_Firewalls');
+    group(sid, 12, 1, 'EU', 'EU');
+    group(sid, 13, 12, 'lon_Firewalls', 'EU/lon_Firewalls');
+    group(sid, 14, 13, 'inner', 'EU/lon_Firewalls/inner');
+    group(sid, 15, 10, 'Core', 'NA/Core');
+    const fw1 = dev(sid, { group_ids_json: '[11]', role: 'firewall', is_network: 1 });
+    const fw2 = dev(sid, { group_ids_json: '[14]', role: 'firewall', is_network: 1, host_status: 'dead', dead_since: sqlTs(3600 * 1000) });
+    const core = dev(sid, { group_ids_json: '[15]', role: 'router', is_network: 1 });
+    const stray = dev(sid, { group_ids_json: '[]', role: 'firewall', is_network: 1 });
+    return { sid, fw1, fw2, core, stray };
+  }
+  const put = (v) => setSetting('lm_service_groups', JSON.stringify(v));
+
+  it('reads a round 14 entry as a one-group service with the <sid>-<gid> id', () => {
+    const { sid } = estate();
+    put([{ sourceId: sid, groupId: 15, label: 'Core WAN' }, { sourceId: sid, groupId: 11 }]);
+    const list = groups.services(db);
+    expect(list.map((s) => [s.serviceId, s.label, s.kind])).toEqual([[`${sid}-15`, 'Core WAN', 'group'], [`${sid}-11`, 'Phx Firewalls', 'group']]);
+    expect(list[0].members).toEqual([{ kind: 'group', sourceId: sid, groupId: 15, matched: 1, label: 'Core' }]);
+    expect(list[0].id).toBe(`${sid}:15`);
+  });
+
+  it('a segment glob matches one level, ** crosses levels', () => {
+    expect(groups.matchPattern('*/*_Firewalls', 'NA/phx_Firewalls')).toBe(true);
+    expect(groups.matchPattern('*/*_firewalls', 'NA/phx_Firewalls')).toBe(true);
+    expect(groups.matchPattern('*/*_Firewalls', 'EU/lon_Firewalls/inner')).toBe(false);
+    expect(groups.matchPattern('**/inner', 'EU/lon_Firewalls/inner')).toBe(true);
+    expect(groups.matchPattern('*/*_Firewalls', 'A/B/phx_Firewalls')).toBe(false);
+    expect(groups.matchPattern('NA/Core', 'NA/Core')).toBe(true);
+  });
+
+  it('a pattern member rolls up every matched group and its descendants', () => {
+    const { sid, fw1, fw2 } = estate();
+    put([{ id: 'firewalls', label: 'Firewalls', members: [{ kind: 'pattern', sourceId: null, match: '*/*_Firewalls' }] }]);
+    const [svc] = groups.services(db);
+    expect(svc).toMatchObject({ serviceId: 'firewalls', kind: 'composite', id: 'svc:firewalls', sourceId: null, groupId: null, state: 'failed' });
+    expect(svc.counts).toEqual({ crit: 1, warn: 0, ok: 1, total: 2 });
+    expect(svc.members).toEqual([{ kind: 'pattern', sourceId: null, match: '*/*_Firewalls', matched: 2, label: '*/*_Firewalls' }]);
+    expect(svc.memberGroups.map((n) => n.fullPath)).toEqual(['EU/lon_Firewalls', 'NA/phx_Firewalls']);
+    expect([...svc._keys].sort()).toEqual([`${sid}:${fw1.id}`, `${sid}:${fw2.id}`].sort());
+  });
+
+  it('a role member unions with a group member and a device in both counts once', () => {
+    const { sid } = estate();
+    put([{ id: 'edge', label: 'Edge', members: [
+      { kind: 'role', sourceId: null, role: 'firewall' },
+      { kind: 'group', sourceId: sid, groupId: 11 },
+      { kind: 'pattern', sourceId: sid, match: 'NA/*' },
+    ] }]);
+    const [svc] = groups.services(db);
+    // 3 firewalls by role (stray included); the group member repeats fw1; NA/* is phx_Firewalls and Core, so the router joins.
+    expect(svc.counts.total).toBe(4);
+    expect(svc.members.map((m) => [m.kind, m.matched])).toEqual([['role', 3], ['group', 1], ['pattern', 2]]);
+    expect(svc.memberGroups.map((n) => n.groupId).sort((a, b) => a - b)).toEqual([11, 15]);
+    expect(new Set(svc._keys).size).toBe(svc._keys.length);
+  });
+
+  it('a role member covers every portal when sourceId is null and one portal when set', () => {
+    const { sid } = estate();
+    const sid2 = source('Other');
+    dev(sid2, { role: 'firewall', is_network: 1 });
+    put([{ id: 'fw', label: 'FW', members: [{ kind: 'role', sourceId: null, role: 'firewall' }] }, { id: 'fw1', label: 'FW1', members: [{ kind: 'role', sourceId: sid, role: 'firewall' }] }]);
+    const list = groups.services(db);
+    expect(list[0].counts.total).toBe(4);
+    expect(list[1].counts.total).toBe(3);
+  });
+
+  it('a composite with no devices is unknown, not missing', () => {
+    estate();
+    put([{ id: 'none', label: 'None', members: [{ kind: 'pattern', sourceId: null, match: 'Zzz/*' }] }]);
+    expect(groups.services(db)[0]).toMatchObject({ state: 'unknown', missing: false, counts: { total: 0 } });
+  });
+
+  it('derives ids from labels, de-duplicates them and keeps the round 14 id', () => {
+    const { sid } = estate();
+    const r = groups.normalizeEntries([
+      { label: 'Core Network', members: [{ kind: 'role', role: 'router' }] },
+      { label: 'Core Network', members: [{ kind: 'role', role: 'switch' }] },
+      { sourceId: sid, groupId: 15 },
+    ]);
+    expect(r.entries.map((e) => e.id)).toEqual(['core-network', 'core-network-2', `${sid}-15`]);
+    expect(r.entries[0].members).toEqual([{ kind: 'role', sourceId: null, role: 'router' }]);
+  });
+
+  it('validates strictly', () => {
+    const chk = (v) => groups.checkServiceGroups(JSON.stringify(v));
+    const m = { kind: 'role', role: 'firewall' };
+    expect(chk([{ label: 'A', members: [m] }])).toBeNull();
+    expect(chk([{ label: 'A', members: [{ kind: 'zone' }] }])).toMatch(/kind/);
+    expect(chk([{ label: 'A', members: [{ kind: 'pattern', match: 'a<b' }] }])).toMatch(/pattern/);
+    expect(chk([{ label: 'A', members: [{ kind: 'pattern', match: '' }] }])).toMatch(/pattern/);
+    expect(chk([{ label: 'A', members: [{ kind: 'pattern', match: 'x'.repeat(201) }] }])).toMatch(/pattern/);
+    expect(chk([{ label: 'A', members: [{ kind: 'role', role: 'toaster' }] }])).toMatch(/role/);
+    expect(chk([{ id: 'a', label: 'A', members: [m] }, { id: 'a', label: 'B', members: [m] }])).toMatch(/used twice/);
+    expect(chk([{ id: 'Bad Id', label: 'A', members: [m] }])).toMatch(/id/);
+    expect(chk([{ label: 'A', members: Array.from({ length: 33 }, () => m) }])).toMatch(/1 to 32/);
+    expect(chk([{ label: 'A', members: [] }])).toMatch(/1 to 32/);
+    expect(chk([{ members: [m] }])).toMatch(/label is required/);
+    expect(chk([{ label: 'x'.repeat(61), members: [m] }])).toMatch(/label/);
+    expect(chk([{ sourceId: 1, groupId: 2 }, { sourceId: 1, groupId: 2 }])).toMatch(/used twice/);
+    expect(chk([{ label: 'A', members: [{ kind: 'group', sourceId: 0, groupId: 1 }] }])).toMatch(/sourceId/);
+  });
+
+  it('previews counts and a sample for a pattern and for a role', () => {
+    estate();
+    expect(groups.previewMembers(db, { match: '*/*_Firewalls' })).toEqual({ groups: 2, devices: 2, sample: ['EU/lon_Firewalls', 'NA/phx_Firewalls'] });
+    expect(groups.previewMembers(db, { match: 'Nothing/*' })).toEqual({ groups: 0, devices: 0, sample: [] });
+    const r = groups.previewMembers(db, { role: 'firewall' });
+    expect(r.groups).toBe(0);
+    expect(r.devices).toBe(3);
+    expect(r.sample).toHaveLength(3);
+  });
+
+  it('lists the role vocabulary with device counts', () => {
+    estate();
+    const roles = groups.roleCounts(db);
+    expect(roles.map((r) => r.role)).toEqual(['switch', 'router', 'firewall', 'load-balancer', 'wireless', 'server', 'storage', 'other']);
+    expect(roles.find((r) => r.role === 'firewall')).toEqual({ role: 'firewall', label: 'Firewall', devices: 3 });
+    expect(roles.find((r) => r.role === 'router').devices).toBe(1);
+    expect(roles.find((r) => r.role === 'storage').devices).toBe(0);
+  });
+});

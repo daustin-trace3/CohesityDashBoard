@@ -240,9 +240,6 @@ router.put('/', (req, res, next) => {
     if (dnsServer !== undefined) {
       setSetting('dns_server', String(dnsServer).trim().slice(0, 253));
     }
-    if (req.body?.featureCustomDashboardsEnabled !== undefined) {
-      setSetting('feature_custom_dashboards_enabled', req.body.featureCustomDashboardsEnabled ? '1' : '0');
-    }
     if (req.body?.opsOverviewStyle !== undefined) {
       const v = String(req.body.opsOverviewStyle);
       if (!OPS_STYLE_VALUES.has(v)) return res.status(400).json({ error: 'opsOverviewStyle must be classic, drift or nocturne' });

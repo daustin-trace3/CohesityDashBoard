@@ -23,7 +23,6 @@ import ServiceStatusPage from './pages/ops/ServiceStatusPage';
 import AppServiceStatusPage from './pages/ops/AppServiceStatusPage';
 import OpsAgentPage from './pages/ops/OpsAgentPage';
 import EstateAdvisorPage from './pages/ops/EstateAdvisorPage';
-import CustomDashboardsPage from './pages/dashboards/CustomDashboardsPage';
 import ErrorBoundary from './components/ErrorBoundary';
 import LicenseGate from './components/LicenseGate';
 import LoginPage from './pages/LoginPage';
@@ -58,7 +57,6 @@ function AppRoutes() {
           <Route path="ops/app-status" element={withBoundary(<AppServiceStatusPage />)} />
           <Route path="ops/agent" element={withBoundary(<OpsAgentPage />)} />
           <Route path="ops/estate-advisor" element={withBoundary(<EstateAdvisorPage />)} />
-          <Route path="ops/dashboards" element={withBoundary(<CustomDashboardsPage />)} />
           <Route path="dashboard" element={<Navigate to="/cohesity" replace />} />
           <Route path="alerts" element={<Navigate to="/cohesity/alerts" replace />} />
           <Route path="hardware" element={<Navigate to="/cohesity/hardware" replace />} />

@@ -83,8 +83,6 @@ describe('migrations/logicmonitor.js', () => {
       expect(ds.id.startsWith('logicmonitor.')).toBe(true);
       expect(ds.table.startsWith('logicmonitor_')).toBe(true);
     }
-    const datasetCatalog = require('../services/datasetCatalog');
-    expect(() => datasetCatalog.registerDatasets('logicmonitor', manifest.datasets)).not.toThrow();
   });
 });
 

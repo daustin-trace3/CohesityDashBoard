@@ -3011,6 +3011,26 @@ router.get('/services', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// Picker support (round 15). These sit before /services/:serviceId so the slug route does not take them.
+router.get('/services/preview', [
+  query('match').optional().isString().isLength({ max: 200 }),
+  query('role').optional().isString().isLength({ max: 40 }),
+  query('sourceId').optional().isInt({ min: 1 }).toInt(),
+  validate,
+], (req, res, next) => {
+  try {
+    const match = req.query.match ? String(req.query.match) : null;
+    const role = req.query.role ? String(req.query.role) : null;
+    if (match && !/^[A-Za-z0-9 \-_.()*/]+$/.test(match)) return res.status(400).json({ error: 'Invalid parameters', details: [{ path: 'match', msg: 'pattern may only use letters, digits, space, * / - _ . ( )' }] });
+    if (role && !lmGroups().roleVocabulary().includes(role)) return res.status(400).json({ error: 'Invalid parameters', details: [{ path: 'role', msg: 'unknown role' }] });
+    res.json(lmGroups().previewMembers(db, { match, role, sourceId: req.query.sourceId == null ? null : req.query.sourceId }));
+  } catch (err) { next(err); }
+});
+
+router.get('/services/roles', (req, res, next) => {
+  try { res.json(lmGroups().roleCounts(db)); } catch (err) { next(err); }
+});
+
 /** Open ops incidents whose host (or any alert host) names a device in the branch. Zero when the ops tables are absent. */
 function openIncidentCount(names) {
   if (!names.size) return 0;
@@ -3031,19 +3051,31 @@ function openIncidentCount(names) {
 
 router.get('/services/:serviceId', (req, res, next) => {
   try {
-    const m = /^(\d+)-(\d+)$/.exec(String(req.params.serviceId));
-    const svc = m ? lmGroups().services(db).find((s) => s.serviceId === req.params.serviceId && !s.missing) : null;
+    const list = /^[a-z0-9][a-z0-9-]{0,39}$/.test(String(req.params.serviceId)) ? lmGroups().services(db) : [];
+    const svc = list.find((s) => s.serviceId === req.params.serviceId && !s.missing);
     if (!svc) return res.status(404).json({ error: 'Service not found' });
-    const tree = lmGroups().buildGroupTree(db, { sourceId: svc.sourceId });
-    const node = tree.node(svc.id);
-    const keys = tree.membersOf(node.id);
+    const tree = list._tree;
+    const keys = svc._keys;
     const lk = lookups();
-    const devices = nodeDevices(tree, node, true, lk);
-    const subGroups = tree.descendantsOf(node.id);
+    const composite = svc.kind === 'composite';
+    let devices;
+    let subGroups;
+    if (composite) {
+      devices = sortWorstFirst(groupDeviceRows(keys, tree.states, lk));
+      // subGroup names the first member group a device sits in.
+      const bySub = new Map();
+      for (const g of svc.memberGroups) for (const k of tree.membersOf(g.id)) if (!bySub.has(k)) bySub.set(k, g.name);
+      for (const d of devices) d.subGroup = bySub.get(`${d.sourceId}:${d.id}`) || null;
+      devices = devices.slice(0, 2000);
+      subGroups = svc.memberGroups.map((n) => ({ ...n, depth: 0, parentId: null }));
+    } else {
+      devices = nodeDevices(tree, tree.node(svc.id), true, lk);
+      subGroups = tree.descendantsOf(svc.id);
+    }
     let crit = 0; let warn = 0; let issuesOpen = 0;
     const sites = new Set();
     const names = new Set();
-    const devIds = [];
+    const idsBySource = new Map();
     for (const k of keys) {
       const st = tree.states.get(k);
       if (!st) continue;
@@ -3051,16 +3083,19 @@ router.get('/services/:serviceId', (req, res, next) => {
       if (st.siteKey) sites.add(st.siteKey);
       if (st.name) names.add(String(st.name).toLowerCase());
       if (st.displayName) names.add(String(st.displayName).toLowerCase());
-      devIds.push(st.deviceId);
+      if (!idsBySource.has(st.sourceId)) idsBySource.set(st.sourceId, []);
+      idsBySource.get(st.sourceId).push(st.deviceId);
     }
     let total = 0; let down = 0;
-    for (const part of lmGroups().chunks(devIds)) {
-      const r = db.prepare(`
-        SELECT COUNT(*) AS n, SUM(CASE WHEN status_text = 'down' AND COALESCE(stop_monitoring, 0) = 0 THEN 1 ELSE 0 END) AS d
-        FROM lm_interfaces WHERE source_id = ? AND stale = 0 AND circuit_role IN ('wan', 'site-link')
-          AND lm_device_id IN (${part.map(() => '?').join(',')})
-      `).get(svc.sourceId, ...part);
-      total += r.n || 0; down += r.d || 0;
+    for (const [sid, devIds] of idsBySource) {
+      for (const part of lmGroups().chunks(devIds)) {
+        const r = db.prepare(`
+          SELECT COUNT(*) AS n, SUM(CASE WHEN status_text = 'down' AND COALESCE(stop_monitoring, 0) = 0 THEN 1 ELSE 0 END) AS d
+          FROM lm_interfaces WHERE source_id = ? AND stale = 0 AND circuit_role IN ('wan', 'site-link')
+            AND lm_device_id IN (${part.map(() => '?').join(',')})
+        `).get(sid, ...part);
+        total += r.n || 0; down += r.d || 0;
+      }
     }
     res.json({
       service: svc,
@@ -3099,34 +3134,14 @@ function checkMapLayout(v) {
   }
   return null;
 }
-// Service groups (round 14): a JSON array of { sourceId, groupId, label? } kept as one app_settings text value.
+// Service groups (rounds 14 and 15): a JSON array of services { id?, label?, members: [...] } (or the round 14
+// { sourceId, groupId, label? }) kept as one app_settings text value. Rules live in services/logicmonitorGroups.js.
 const SERVICE_KEY = 'lm_service_groups';
-const SERVICE_MAX_BYTES = 16 * 1024;
-const SERVICE_MAX = 64;
 function serviceGroupsValue() {
   try { return String(getSetting(SERVICE_KEY) || ''); } catch { return ''; }
 }
-/** '' clears the picks. Returns an error string or null. */
-function checkServiceGroups(v) {
-  if (typeof v !== 'string') return 'must be a JSON string';
-  if (Buffer.byteLength(v) > SERVICE_MAX_BYTES) return 'must be 16 KB or less';
-  if (!v.trim()) return null;
-  let a;
-  try { a = JSON.parse(v); } catch { return 'must be valid JSON'; }
-  if (!Array.isArray(a)) return 'must be a JSON array';
-  if (a.length > SERVICE_MAX) return `must have at most ${SERVICE_MAX} entries`;
-  const seen = new Set();
-  for (const p of a) {
-    if (!p || typeof p !== 'object' || Array.isArray(p)) return 'every entry needs sourceId and groupId';
-    if (!Number.isInteger(p.sourceId) || p.sourceId < 1) return 'sourceId must be a positive integer';
-    if (!Number.isInteger(p.groupId) || p.groupId < 0) return 'groupId must be a non-negative integer';
-    if (p.label !== undefined && (typeof p.label !== 'string' || p.label.trim().length < 1 || p.label.trim().length > 60)) return 'label must be 1 to 60 characters';
-    const k = `${p.sourceId}-${p.groupId}`;
-    if (seen.has(k)) return `group ${k} is picked twice`;
-    seen.add(k);
-  }
-  return null;
-}
+/** '' clears the services. Returns an error string or null. */
+const checkServiceGroups = (v) => lmGroups().checkServiceGroups(v);
 const configPayload = () => ({ thresholds: allThresholds(), [MAP_LAYOUT_KEY]: mapLayoutValue(), [SERVICE_KEY]: serviceGroupsValue(), ranges: buildRanges(), labels: buildLabels() });
 
 router.get('/config', (req, res, next) => {

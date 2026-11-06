@@ -1,7 +1,6 @@
 // Plugin registry + request dispatcher (contract C4).
 const { buildCoreApi } = require('./coreApi');
 const { runMigrations } = require('./migrations');
-const datasetCatalog = require('../services/datasetCatalog');
 
 const PLUGIN_API_VERSION = 1;
 
@@ -9,7 +8,7 @@ const RESERVED_IDS = new Set([
   'license', 'licensing', 'settings', 'poller', 'dns', 'import', 'insights',
   'advisor', 'ai-audit', 'analytics', 'governance', 'dashboard', 'helios',
   'alerts', 'metrics', 'hardware', 'clusters', 'replication', 'plugins',
-  'auth', 'users', 'cohesity', 'datasets', 'user-dashboards',
+  'auth', 'users', 'cohesity',
 ]);
 
 const ID_PATTERN = /^[a-z0-9-]+$/;
@@ -133,9 +132,6 @@ function registerPlugin(manifest) {
     if (typeof manifest.createPoller === 'function') {
       entry.poller = manifest.createPoller(coreApiRef);
     }
-    if (Array.isArray(manifest.datasets) && manifest.datasets.length) {
-      datasetCatalog.registerDatasets(entry.id, manifest.datasets);
-    }
     entry.status = 'active';
     entry.error = null;
   } catch (err) {
@@ -169,7 +165,6 @@ function unregisterPlugin(id) {
   if (!entry) return false;
   const h = entry.poller;
   if (h && typeof h.stopAll === 'function') { try { h.stopAll(); } catch { /* best effort */ } }
-  datasetCatalog.unregisterNamespace(id);
   plugins.delete(id);
   return true;
 }
@@ -296,7 +291,6 @@ function dispatch(req, res, next) {
 
 /** Test-only: clears in-memory registry state between test cases. */
 function _reset() {
-  for (const id of plugins.keys()) datasetCatalog.unregisterNamespace(id);
   plugins.clear();
   coreApiRef = null;
   initialized = false;
