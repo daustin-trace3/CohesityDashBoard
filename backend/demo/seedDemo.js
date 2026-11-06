@@ -137,7 +137,7 @@ const SEEDED_TABLES = [
   'lm_alerts', 'lm_sdts', 'lm_admins', 'lm_roles', 'lm_devices', 'lm_device_groups',
   'lm_collectors', 'lm_sources',
   // service status history written by scenarios/serviceStatusPlatform.js
-  'service_alert_analyses', 'service_alert_events', 'service_status_timeline',
+  'service_alert_analyses', 'service_alert_events', 'service_status_timeline', 'service_group_status_timeline',
 ];
 
 // Tables a parallel migration may not have created yet; a missing one is skipped.
@@ -197,6 +197,9 @@ async function main() {
   const { refreshDemoPollerStatus, seedServiceStatusHistory } = require('./scenarios/serviceStatusPlatform');
   refreshDemoPollerStatus(db, { now });
   const statusResult = seedServiceStatusHistory(db, { now });
+  // Service groups (LogicMonitor services) day by day, ending on the live state.
+  const { seedServiceGroupsHistory } = require('./scenarios/serviceGroupsStatus');
+  const groupStatusResult = seedServiceGroupsHistory(db, { now });
   // Ops Agent observations: five vCenter subjects replayed through the real
   // engine (critical, degrading, watching, pattern, closed host); see opsObservations.js.
   const { applyOpsObservations } = require('./scenarios/opsObservations');
@@ -236,6 +239,7 @@ async function main() {
     ['scenario san-boot-path-down (vcenter/brocade/dell)', `${scenarioResult.vcenter.applied}/${scenarioResult.brocade.applied}/${scenarioResult.dell.applied}`],
     ['scenario app-service-linking (objects/vpgs/zerto vms)', `${linkResult.objects}/${linkResult.vpgs}/${linkResult.zertoVms}`],
     ['service status history (timeline rows/events, degraded platform)', `${statusResult.timelineRows}/${statusResult.events}, ${statusResult.degradedPlatform || 'none'}`],
+    ['service group status history (services/timeline rows)', `${groupStatusResult.services}/${groupStatusResult.rows}`],
     ['ops observations (applied, episodes by state)', obsResult.applied ? `yes ${JSON.stringify(obsResult.byState)}` : `no (${obsResult.reason})`],
     ['users', 1],
   ];

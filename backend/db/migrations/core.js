@@ -753,4 +753,18 @@ module.exports = [
       if (!cols.has('deep_pass_at')) db.exec('ALTER TABLE ops_incidents ADD COLUMN deep_pass_at TEXT');
     },
   },
+  // Service groups on the Ops page: one row per state change of a LogicMonitor
+  // service group, same rule as service_status_timeline for platforms.
+  {
+    version: 35,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS service_group_status_timeline (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, service_id TEXT NOT NULL, label TEXT,
+          state TEXT NOT NULL, at TEXT NOT NULL, reason TEXT, counts_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS idx_sgst_service_at ON service_group_status_timeline(service_id, at);
+      `);
+    },
+  },
 ];

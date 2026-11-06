@@ -424,9 +424,9 @@ export default function ServiceStatusPage() {
     <div>
       <PageHeader
         icon={HeartPulse}
-        title="Service status"
+        title="Platform status"
         description={board?.mode === 'platform'
-          ? "Platform availability as ICC sees it: whether each platform's sources answer ICC's polls. Alerts from the monitored estate live on each platform's Alerts page."
+          ? "How ICC reaches each platform it polls, day by day"
           : 'Point-in-time platform state driven by critical alerts. One dot per day, today is live.'}
       >
         <div className="flex items-center gap-1 rounded-lg border border-cohesity-border p-0.5">

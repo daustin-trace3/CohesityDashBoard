@@ -20,6 +20,7 @@ import OpsMonitorPage from './pages/ops/OpsMonitorPage';
 import ServerStatusPage from './pages/ops/ServerStatusPage';
 import TopologyPage from './pages/ops/TopologyPage';
 import ServiceStatusPage from './pages/ops/ServiceStatusPage';
+import ServiceGroupsStatusPage from './pages/ops/ServiceGroupsStatusPage';
 import AppServiceStatusPage from './pages/ops/AppServiceStatusPage';
 import OpsAgentPage from './pages/ops/OpsAgentPage';
 import EstateAdvisorPage from './pages/ops/EstateAdvisorPage';
@@ -53,6 +54,7 @@ function AppRoutes() {
           <Route path="ops" element={withBoundary(<OpsMonitorPage />)} />
           <Route path="ops/server360" element={withBoundary(<ServerStatusPage />)} />
           <Route path="ops/topology" element={withBoundary(<TopologyPage />)} />
+          <Route path="ops/services" element={withBoundary(<ServiceGroupsStatusPage />)} />
           <Route path="ops/status" element={withBoundary(<ServiceStatusPage />)} />
           <Route path="ops/app-status" element={withBoundary(<AppServiceStatusPage />)} />
           <Route path="ops/agent" element={withBoundary(<OpsAgentPage />)} />

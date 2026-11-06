@@ -329,6 +329,7 @@ function pruneOld(now) {
     }
     const cutoff400 = new Date(Date.now() - 400 * 86400000).toISOString();
     pruneInBatches(db, 'service_status_timeline', 'at < ?', [cutoff400]);
+    pruneInBatches(db, 'service_group_status_timeline', 'at < ?', [cutoff400]);
   } catch (err) {
     logger.error('[ServiceStatus] prune failed:', err.message);
   }
@@ -407,6 +408,7 @@ async function sweep() {
       }
 
       recomputeStates(now, enabledIds);
+      try { recomputeServiceStates(now); } catch (err) { logger.error('[ServiceStatus] service groups failed:', err.message); }
       pruneOld(now);
     })();
 
@@ -1304,6 +1306,106 @@ function getBoard({ days = 30 } = {}) {
   return { generatedAt: new Date().toISOString(), mode: getMode(), days: dayStrings, platforms, worker };
 }
 
+// ---------------------------------------------------------------------------
+// Service groups (LogicMonitor services picked in LM Settings > Service groups)
+// ---------------------------------------------------------------------------
+
+/** The live picked services, or null when LogicMonitor is off or unreadable. */
+function liveServices() {
+  if (!platformGateOk('logicmonitor')) return null;
+  try {
+    return require('./logicmonitorGroups').services(db);
+  } catch (err) {
+    logger.warn('[ServiceStatus] service groups unreadable:', err.message);
+    return null;
+  }
+}
+
+function serviceReason(svc) {
+  const c = svc.counts || {};
+  const reasons = (svc.reasons || []).slice(0, 3);
+  if (reasons.length) return reasons.join('; ');
+  return `${c.crit || 0} failed, ${c.warn || 0} degraded, ${c.ok || 0} ok of ${c.total || 0} devices`;
+}
+
+/** One timeline row per service state change, same rule as the platforms. */
+function recomputeServiceStates(now) {
+  const list = liveServices();
+  if (!list || !list.length) return;
+  const lastStmt = db.prepare('SELECT state FROM service_group_status_timeline WHERE service_id = ? ORDER BY at DESC, id DESC LIMIT 1');
+  const ins = db.prepare('INSERT INTO service_group_status_timeline (service_id, label, state, at, reason, counts_json) VALUES (?, ?, ?, ?, ?, ?)');
+  for (const svc of list) {
+    const last = lastStmt.get(svc.serviceId);
+    if (last && last.state === svc.state) continue;
+    ins.run(svc.serviceId, svc.label || null, svc.state, now, serviceReason(svc), JSON.stringify(svc.counts || {}));
+  }
+}
+
+function getServicesBoard({ days = 30 } = {}) {
+  const clamped = Math.max(7, Math.min(120, Number(days) || 30));
+  const today = new Date();
+  const dayStrings = [];
+  for (let i = clamped - 1; i >= 0; i -= 1) {
+    dayStrings.push(new Date(today.getTime() - i * 86400000).toISOString().slice(0, 10));
+  }
+  const base = { generatedAt: new Date().toISOString(), days: dayStrings };
+  const list = liveServices();
+  if (!list) return { ...base, services: [], picked: 0, logicmonitorEnabled: false };
+
+  const services = list.map((svc) => {
+    const timeline = db.prepare(
+      'SELECT state, at FROM service_group_status_timeline WHERE service_id = ? ORDER BY at ASC, id ASC'
+    ).all(svc.serviceId);
+    let idx = 0;
+    let lastState = 'unknown';
+    const dayRows = dayStrings.map((date) => {
+      const dayEnd = `${date}T23:59:59.999Z`;
+      let changes = 0;
+      while (idx < timeline.length && timeline[idx].at <= dayEnd) {
+        lastState = timeline[idx].state;
+        if (timeline[idx].at.slice(0, 10) === date) changes += 1;
+        idx += 1;
+      }
+      return { date, state: lastState, changes };
+    });
+    const sinceRow = db.prepare(
+      'SELECT at FROM service_group_status_timeline WHERE service_id = ? ORDER BY at DESC, id DESC LIMIT 1'
+    ).get(svc.serviceId);
+    return {
+      serviceId: svc.serviceId,
+      label: svc.label,
+      route: `/logicmonitor/services/${svc.serviceId}`,
+      current: {
+        state: svc.state,
+        since: sinceRow ? sinceRow.at : null,
+        reason: serviceReason(svc),
+        counts: svc.counts || { crit: 0, warn: 0, ok: 0, total: 0 },
+        devices: svc.devices,
+      },
+      days: dayRows,
+    };
+  });
+  return { ...base, services, picked: services.length, logicmonitorEnabled: true };
+}
+
+/** True when the id is a current pick or has any timeline row. */
+function serviceKnown(serviceId) {
+  const list = liveServices() || [];
+  if (list.some((s) => s.serviceId === serviceId)) return true;
+  return !!db.prepare('SELECT 1 FROM service_group_status_timeline WHERE service_id = ? LIMIT 1').get(serviceId);
+}
+
+function listServiceEvents({ serviceId, date }) {
+  return db.prepare(`
+    SELECT id, state, at, reason, counts_json FROM service_group_status_timeline
+    WHERE service_id = ? AND at >= ? AND at <= ? ORDER BY at ASC, id ASC
+  `).all(serviceId, `${date}T00:00:00.000Z`, `${date}T23:59:59.999Z`).map((r) => {
+    let counts = {};
+    try { counts = JSON.parse(r.counts_json || '{}'); } catch { /* keep empty */ }
+    return { id: r.id, state: r.state, at: r.at, reason: r.reason, counts };
+  });
+}
+
 let intervalHandle = null;
 let timeoutHandle = null;
 
@@ -1329,6 +1431,10 @@ module.exports = {
   runPending,
   analyzeEvent,
   getBoard,
+  getServicesBoard,
+  listServiceEvents,
+  serviceKnown,
+  recomputeServiceStates,
   listEvents,
   getEvent,
   initServiceStatus,

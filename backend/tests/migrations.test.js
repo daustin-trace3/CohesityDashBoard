@@ -257,7 +257,7 @@ const NEW_TABLES = [
   'bluecat_blocks', 'bluecat_networks', 'bluecat_ranges', 'bluecat_addresses',
   'bluecat_devices', 'bluecat_servers', 'bluecat_network_overrides',
   'bluecat_metrics_history', 'bluecat_issue_history',
-  'service_alert_events', 'service_alert_analyses', 'service_status_timeline',
+  'service_alert_events', 'service_alert_analyses', 'service_status_timeline', 'service_group_status_timeline',
   'app_service_watch', 'app_service_state', 'app_service_catalog',
   'alert_notify_platform', 'alert_notify_types',
   'ops_incidents', 'ops_incident_alerts', 'ops_incident_analyses', 'ops_agent_runs', 'ops_capability_runs', 'ops_observations',

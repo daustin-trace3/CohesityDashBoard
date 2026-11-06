@@ -14,6 +14,29 @@ router.get('/board', (req, res, next) => {
   }
 });
 
+router.get('/services', (req, res, next) => {
+  try {
+    const days = req.query.days !== undefined ? Number(req.query.days) : 30;
+    res.json(svc.getServicesBoard({ days }));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/services/:serviceId/events', (req, res, next) => {
+  try {
+    const { date } = req.query;
+    if (!date || typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+    }
+    const serviceId = String(req.params.serviceId);
+    if (!svc.serviceKnown(serviceId)) return res.status(404).json({ error: 'Service not found.' });
+    res.json({ events: svc.listServiceEvents({ serviceId, date }) });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/events', (req, res, next) => {
   try {
     const { platform, date } = req.query;
