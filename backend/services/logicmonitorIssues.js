@@ -47,7 +47,7 @@ const THRESHOLD_DEFS = {
   lm_circuit_event_days: { def: 365, min: 30, max: 1095, label: 'Circuit event log retention (days)' },
   lm_webhook_rate_per_min: { def: 600, min: 60, max: 6000, label: 'Webhook rate limit (per minute)' },
   // Round 14 (groups as services).
-  lm_group_fail_pct: { def: 10, min: 1, max: 100, label: 'Group failed when this share of its devices is failed (%)' },
+  lm_group_fail_pct: { def: 10, min: 1, max: 100, label: 'Group failed when this share of its devices is dead (%)' },
   lm_group_fail_on_network_dead: { def: 1, min: 0, max: 1, bool: true, label: 'A dead network device fails its groups' },
   // Round 8 (DataSource metric collector, firewalls, load balancers, device health).
   lm_metrics_data_calls_per_tick: { def: 300, min: 20, max: 2000, label: 'Metrics tier data calls per run' },

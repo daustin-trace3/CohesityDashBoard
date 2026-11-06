@@ -127,10 +127,12 @@ function computeSourceStates(db, sourceId, nowMs) {
     if (inSdt(d.sdt_status)) { bump('degraded'); reasons.push('in SDT'); }
 
     const al = alertsBy.get(d.lm_device_id) || { crit: [], warn: [] };
-    if (al.crit.length) { bump('failed'); reasons.push(`critical alert: ${clip(al.crit[0], 60)}`); }
+    // Doug 2026-11-06: Failed means the device is dead or offline. Anything a live device
+    // reports, a critical alert included, is Degraded at most.
+    if (al.crit.length) { bump('degraded'); reasons.push(`critical alert: ${clip(al.crit[0], 60)}`); }
     if (al.warn.length) { bump('degraded'); reasons.push(`warning alert: ${clip(al.warn[0], 60)}`); }
     const is = issuesBy.get(d.lm_device_id) || { crit: [], warn: [] };
-    if (is.crit.length) { bump('failed'); reasons.push(`issue ${is.crit[0]}`); }
+    if (is.crit.length) { bump('degraded'); reasons.push(`issue ${is.crit[0]}`); }
     if (is.warn.length) { bump('degraded'); reasons.push(`issue ${is.warn[0]}`); }
 
     out.set(`${sourceId}:${d.lm_device_id}`, {

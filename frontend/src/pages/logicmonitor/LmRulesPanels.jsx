@@ -162,7 +162,7 @@ export function LmDevicesRulesPanel() {
       </SettingGroup>
       <SettingGroup title="Groups">
         <NumRow cfg={cfg} k="lm_group_fail_pct" label="Group failed at" unit="% of devices"
-          tip="A group turns Failed when at least this share of its devices is failed. Below the line a failed device makes the group Degraded." />
+          tip="A device is Failed only when it is dead or offline; alerts and issues on a live device make it Degraded. A group turns Failed when at least this share of its devices is dead. Below the line a dead device makes the group Degraded." />
         <ToggleRow cfg={cfg} k="lm_group_fail_on_network_dead" label="A dead network device fails its groups"
           tip="A dead network device turns every group it belongs to Failed regardless of the share." />
       </SettingGroup>

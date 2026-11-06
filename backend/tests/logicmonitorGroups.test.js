@@ -87,7 +87,8 @@ describe('device state', () => {
     alert(sid, a.id, 'warning'); alert(sid, a.id, 'critical', { acked: 1 });
     alert(sid, b.id, 'info');
     alert(sid, c.id, 'warning');
-    expect(stateOf(sid, a.id).state).toBe('failed');
+    // A live device never reads Failed: a critical alert degrades it (Doug, 2026-11-06).
+    expect(stateOf(sid, a.id).state).toBe('degraded');
     expect(stateOf(sid, a.id).reasons).toEqual(['critical alert: Cisco_CPU', 'warning alert: Cisco_CPU']);
     expect(stateOf(sid, b.id).state).toBe('ok');
     expect(stateOf(sid, c.id).state).toBe('degraded');
@@ -107,7 +108,7 @@ describe('device state', () => {
     const a = dev(sid, { display_name: 'core-sw1' });
     ins('lm_issue_history', { issue_key: 'k1', source: 'Acme', severity: 'critical', type: 'interface-flapping', target: 'core-sw1 Gi1/0/2', message: 'm', status: 'open' });
     ins('lm_issue_history', { issue_key: 'k2', source: 'Acme', severity: 'critical', type: 'x', target: 'core-sw1', message: 'm', status: 'resolved' });
-    expect(stateOf(sid, a.id)).toMatchObject({ state: 'failed', reasons: ['issue interface-flapping'], openIssues: 1 });
+    expect(stateOf(sid, a.id)).toMatchObject({ state: 'degraded', reasons: ['issue interface-flapping'], openIssues: 1 });
   });
 
   it('flags networkCritical only for dead network devices', () => {
@@ -177,10 +178,9 @@ describe('group tree', () => {
 
   it('fail share at the line fails, under the line degrades', () => {
     const sid = cgShape();
-    // 10 devices, 1 failed by critical alert = 10% (default line 10) -> failed
-    const ids = [];
-    for (let i = 0; i < 10; i += 1) ids.push(dev(sid, { group_ids_json: '[12]' }).id);
-    alert(sid, ids[0], 'critical');
+    // 10 devices, 1 failed (dead past the grace window) = 10% (default line 10) -> failed
+    for (let i = 0; i < 9; i += 1) dev(sid, { group_ids_json: '[12]' });
+    dev(sid, { group_ids_json: '[12]', host_status: 'dead', dead_since: sqlTs(3600 * 1000) });
     expect(nodeOf(sid, 12)).toMatchObject({ state: 'failed', counts: { crit: 1, ok: 9, total: 10 } });
     expect(nodeOf(sid, 12).reasons[0]).toBe('1 of 10 failed (10%, red line 10%)');
     // one more healthy device -> 1/11 = 9.1% -> degraded
@@ -213,9 +213,8 @@ describe('group tree', () => {
 
   it('lm_group_fail_pct is honoured', () => {
     const sid = cgShape();
-    const ids = [];
-    for (let i = 0; i < 4; i += 1) ids.push(dev(sid, { group_ids_json: '[12]' }).id);
-    alert(sid, ids[0], 'critical');
+    for (let i = 0; i < 3; i += 1) dev(sid, { group_ids_json: '[12]' });
+    dev(sid, { group_ids_json: '[12]', host_status: 'dead', dead_since: sqlTs(3600 * 1000) });
     expect(nodeOf(sid, 12).state).toBe('failed'); // 25% >= 10
     setSetting('lm_group_fail_pct', '50');
     expect(nodeOf(sid, 12).state).toBe('degraded');
@@ -223,9 +222,8 @@ describe('group tree', () => {
 
   it('summary counts groups and distinct devices', () => {
     const sid = cgShape();
-    const a = dev(sid, { group_ids_json: '[11,12]' });
+    dev(sid, { group_ids_json: '[11,12]', host_status: 'dead', dead_since: sqlTs(3600 * 1000) });
     dev(sid, { group_ids_json: '[12]' });
-    alert(sid, a.id, 'critical');
     const s = groups.buildGroupTree(db).summary;
     expect(s.groups).toBe(3);
     expect(s.devices).toEqual({ crit: 1, warn: 0, ok: 1, total: 2 });
