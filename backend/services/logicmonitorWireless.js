@@ -92,7 +92,7 @@ function buildWirelessModel(db, q = {}, scope = {}) {
   const lk = lookups(db);
   const util = lmIssues.getThreshold('lm_wlan_chan_util_warn_pct');
   const devs = roleDevices(db, WLC_WHERE, q, scope);
-  const index = L.loadDsIndex(db, { families: ['wireless', 'health'] });
+  const index = L.loadDsIndex(db, { families: ['wireless', 'health'], devices: devs });
   const missing = L.loadMissingAps(db);
   const issues = openIssues(db);
   const controllers = [];

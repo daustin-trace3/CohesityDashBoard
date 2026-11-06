@@ -75,7 +75,7 @@ function firewallRow(r, lk, dev, issues, rates) {
 function listFirewalls(db, opts = {}) {
   const lk = lookups(db);
   const devs = roleDevices(db, FW_WHERE, opts, opts);
-  const index = lmIssues.loadDsIndex(db, { families: ['firewall', 'health'] });
+  const index = lmIssues.loadDsIndex(db, { families: ['firewall', 'health'], devices: devs });
   const issues = openIssues(db);
   const rates = { threats: counterRates(db, 'threats_total', 3600), dropped: counterRates(db, 'dropped', 60) };
   let rows = devs.map((r) => firewallRow(r, lk, index.get(`${r.source_id}:${r.lm_device_id}`), issues, rates));

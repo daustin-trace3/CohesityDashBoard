@@ -992,4 +992,14 @@ module.exports = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_lm_devices_vendor_key ON lm_devices(vendor_key, stale)');
     },
   },
+  {
+    // Family-first index on the latest-value metric table. The family models (firewalls,
+    // wireless, voice, ISE, load balancers) load their rows by family alone, which was a
+    // full scan of lm_ds_metrics on every page build (the Cisco overview ran it about 20
+    // times a load). The existing indexes all start with source_id.
+    version: 15,
+    up(db) {
+      db.exec('CREATE INDEX IF NOT EXISTS idx_lm_ds_metrics_family ON lm_ds_metrics(family, source_id, lm_device_id)');
+    },
+  },
 ];

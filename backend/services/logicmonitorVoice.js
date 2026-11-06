@@ -67,7 +67,7 @@ const VOICE_COLUMNS = ['deviceName', 'kind', 'siteName', 'vendor', 'model', 'ver
 function listVoice(db, q = {}) {
   const lk = lookups(db);
   const devs = roleDevices(db, VOICE_WHERE, q, q);
-  const index = lmIssues.loadDsIndex(db, { families: FAMS_VOICE });
+  const index = lmIssues.loadDsIndex(db, { families: FAMS_VOICE, devices: devs });
   const issues = openIssues(db);
   let rows = devs.map((r) => voiceRow(db, r, lk, index.get(`${r.source_id}:${r.lm_device_id}`), issues));
   if (q.state) rows = rows.filter((r) => r.state === q.state);

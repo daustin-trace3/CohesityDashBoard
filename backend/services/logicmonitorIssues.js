@@ -6,6 +6,7 @@
 // and the check rules from logicmonitorChecks. Issue identity is
 // `type|source|target`.
 const { pruneInBatches } = require('../core/dbPrune');
+const { memoByDbState } = require('../core/dbMemo');
 const db = require('../db/database');
 const { getSetting } = require('./settings');
 const checks = require('./logicmonitorChecks');
@@ -384,10 +385,36 @@ const METRIC_ISSUE_TYPES = [
  * Stale instances are skipped; a metric whose instance row is missing keeps the key as its name.
  * opts.families narrows to catalog families, opts.sourceId / opts.deviceId to one device.
  */
+/** Memo key for loadDsIndex: families, one device, or an explicit device list (pairs sorted). */
+function dsIndexKey(opts) {
+  const fams = Array.isArray(opts.families) && opts.families.length ? opts.families.slice().sort().join(',') : '*';
+  const devs = Array.isArray(opts.devices) ? opts.devices.map((d) => `${d.source_id}:${d.lm_device_id}`).sort().join(',') : '';
+  return `lmDsIndex|${fams}|${opts.sourceId == null ? '' : opts.sourceId}|${opts.deviceId == null ? '' : opts.deviceId}|${devs}`;
+}
+
 function loadDsIndex(dbh = db, opts = {}) {
+  // Memoized per database state: the family models call this several times per page
+  // (and the Cisco overview calls four of them), each a read over the whole metric table.
+  if (Array.isArray(opts.devices) && !opts.devices.length) return new Map();
+  // The unfiltered index (the issue engine's whole-estate pass in the poller) is never
+  // memoized: it is hundreds of MB on a large estate and must not outlive its tick.
+  const narrowed = (Array.isArray(opts.families) && opts.families.length) || Array.isArray(opts.devices) || opts.deviceId != null;
+  if (!narrowed) return buildDsIndex(dbh, opts);
+  return memoByDbState(dbh, dsIndexKey(opts), () => buildDsIndex(dbh, opts));
+}
+
+function buildDsIndex(dbh, opts) {
   const out = new Map();
   const where = ['COALESCE(i.stale, 0) = 0'];
   const args = [];
+  // opts.devices = rows with source_id and lm_device_id: only those devices' rows are read
+  // (the family models pass their role devices, so the shared 'health' family is not
+  // loaded for the whole estate). OR of indexed pairs lets SQLite use idx_lm_ds_metrics_dev.
+  if (Array.isArray(opts.devices)) {
+    const pairs = opts.devices.slice(0, 900);
+    where.push(`(${pairs.map(() => '(m.source_id = ? AND m.lm_device_id = ?)').join(' OR ')})`);
+    for (const d of pairs) args.push(d.source_id, d.lm_device_id);
+  }
   if (Array.isArray(opts.families) && opts.families.length) {
     where.push(`m.family IN (${opts.families.map(() => '?').join(',')})`);
     args.push(...opts.families);

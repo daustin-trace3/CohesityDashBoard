@@ -230,7 +230,7 @@ function lbDevices(db, { vendorKey, q, siteKey, sourceId } = {}) {
 function listLoadBalancers(db, { vendorKey = null, q = null, siteKey = null, sourceId = null, state = null } = {}) {
   const lk = lookups(db);
   const devs = lbDevices(db, { vendorKey, q, siteKey, sourceId });
-  const index = lmIssues.loadDsIndex(db, { families: ['loadbalancer', 'health'] });
+  const index = lmIssues.loadDsIndex(db, { families: ['loadbalancer', 'health'], devices: devs });
   const issues = openIssues(db);
   const certWarn = lmIssues.getThreshold('lm_cert_warn_days');
   let rows = devs.map((r) => lbRow(r, lk, index.get(`${r.source_id}:${r.lm_device_id}`), issues, certWarn));

@@ -38,7 +38,7 @@ const ISE_COLUMNS = ['deviceName', 'siteName', 'vendor', 'model', 'version', 'ho
 function listIse(db, q = {}) {
   const lk = lookups(db);
   const devs = roleDevices(db, ISE_WHERE, q, q);
-  const index = lmIssues.loadDsIndex(db, { families: FAMS_SEC });
+  const index = lmIssues.loadDsIndex(db, { families: FAMS_SEC, devices: devs });
   const issues = openIssues(db);
   const modes = lmAppliances.modeMap(index, ['connector_state', 'node_state', 'app_state']);
   let rows = devs.map((r) => iseRow(r, lk, index.get(`${r.source_id}:${r.lm_device_id}`), issues, modes));

@@ -32,6 +32,17 @@ function buildCoreApi(overrides = {}) {
       const f = require('./feeds');
       return Object.freeze({ query: f.query, hasFeed: f.hasFeed, listConnectors: f.listConnectors });
     },
+    get platforms() {
+      // Derived-platform presence for packs (round 1, 2026-11-05 model): a pack
+      // that owns LogicMonitor rows asks which derived platform claims a vendor
+      // key. Read-only views over core/registry; a pack guards for an older host.
+      if (overrides.platforms) return overrides.platforms;
+      const r = require('./registry');
+      return Object.freeze({
+        isPresent: r.isPresent, isDerived: r.isDerived, presenceOf: r.presenceOf,
+        derivedPlatformFor: r.derivedPlatformFor, listDerived: r.listDerived,
+      });
+    },
     get anonymizer() {
       if (overrides.anonymizer) return overrides.anonymizer;
       return require('../services/anonymizer'); // { createAnonymizer, PROMPT_NOTE }
