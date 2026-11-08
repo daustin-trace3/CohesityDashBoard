@@ -68,4 +68,62 @@ module.exports = [
       addColumn(db, 'users', 'directory_pinned', 'INTEGER NOT NULL DEFAULT 0');
     },
   },
+  {
+    version: 3,
+    up(db) {
+      // Identity providers (OIDC + SAML 2.0, Okta): one row per provider, with
+      // the short-lived sign-in state, replay guard and Management API sync log.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS idp_providers (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          slug TEXT NOT NULL UNIQUE,
+          type TEXT NOT NULL CHECK (type IN ('oidc','saml')),
+          enabled INTEGER NOT NULL DEFAULT 0,
+          tested_at TEXT, test_error TEXT,
+          issuer TEXT, client_id TEXT, client_secret TEXT,
+          scopes TEXT NOT NULL DEFAULT 'openid profile email groups',
+          discovery_json TEXT, discovery_at TEXT,
+          idp_entity_id TEXT, idp_sso_url TEXT, idp_cert_pem TEXT, idp_metadata_url TEXT,
+          sp_entity_id TEXT, sp_key_pem TEXT, sp_cert_pem TEXT,
+          want_assertions_signed INTEGER NOT NULL DEFAULT 1,
+          allow_idp_initiated INTEGER NOT NULL DEFAULT 0,
+          claim_subject TEXT NOT NULL DEFAULT 'sub',
+          claim_email TEXT NOT NULL DEFAULT 'email',
+          claim_name TEXT NOT NULL DEFAULT 'name',
+          claim_groups TEXT NOT NULL DEFAULT 'groups',
+          jit_enabled INTEGER NOT NULL DEFAULT 1,
+          mgmt_kind TEXT NOT NULL DEFAULT 'none' CHECK (mgmt_kind IN ('none','okta')),
+          mgmt_base_url TEXT, mgmt_token TEXT,
+          mgmt_sync_minutes INTEGER NOT NULL DEFAULT 60,
+          mgmt_deactivate_removed INTEGER NOT NULL DEFAULT 1,
+          mgmt_last_sync_at TEXT, mgmt_last_status TEXT, mgmt_last_error TEXT,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS idp_auth_state (
+          id TEXT PRIMARY KEY,
+          provider_id INTEGER NOT NULL,
+          kind TEXT NOT NULL,
+          nonce TEXT, code_verifier TEXT, request_id TEXT,
+          return_to TEXT NOT NULL DEFAULT '/',
+          created_at TEXT NOT NULL, expires_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS idp_seen_assertions (
+          assertion_id TEXT PRIMARY KEY, provider_id INTEGER NOT NULL, expires_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS idp_sync_log (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL,
+          started_at TEXT NOT NULL, finished_at TEXT, trigger TEXT NOT NULL, status TEXT NOT NULL,
+          groups_synced INTEGER NOT NULL DEFAULT 0, users_seen INTEGER NOT NULL DEFAULT 0,
+          users_created INTEGER NOT NULL DEFAULT 0, users_updated INTEGER NOT NULL DEFAULT 0,
+          users_deactivated INTEGER NOT NULL DEFAULT 0, message TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_idp_sync_log_started ON idp_sync_log(provider_id, started_at);
+        CREATE INDEX IF NOT EXISTS idx_idp_auth_state_expires ON idp_auth_state(expires_at);
+        CREATE INDEX IF NOT EXISTS idx_idp_auth_state_request ON idp_auth_state(request_id);
+      `);
+      addColumn(db, 'groups', 'idp_provider_id', 'INTEGER');
+      addColumn(db, 'users', 'idp_provider_id', 'INTEGER');
+    },
+  },
 ];

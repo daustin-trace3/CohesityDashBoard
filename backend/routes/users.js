@@ -49,6 +49,7 @@ function toUserRow(user) {
     isActive: !!user.is_active,
     provider: user.auth_provider || 'local',
     email: user.email || null,
+    idpProviderId: user.idp_provider_id || null,
     groups,
     lastLoginAt: user.last_login_at,
   };
@@ -170,6 +171,7 @@ function toGroupRow(group) {
     isSystem: !!group.is_system,
     provider: group.provider || 'local',
     externalName: group.external_name || null,
+    idpProviderId: group.idp_provider_id || null,
     memberCount,
     grants,
   };

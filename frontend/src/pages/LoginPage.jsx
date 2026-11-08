@@ -5,6 +5,20 @@ import client from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import t3Logo from '../assets/t3_logo_dark.png';
 
+const SSO_ERRORS = {
+  sso_provider: 'That sign-in option is not available.',
+  sso_state: 'The sign-in attempt expired. Try again.',
+  sso_token: "The identity provider's answer could not be verified. An administrator can check the provider settings.",
+  sso_idtoken: "The identity provider's answer could not be verified. An administrator can check the provider settings.",
+  sso_signature: "The identity provider's answer could not be verified. An administrator can check the provider settings.",
+  sso_assertion: "The identity provider's answer could not be verified. An administrator can check the provider settings.",
+  sso_no_access: 'Your account is not in any group that has access to this dashboard.',
+  sso_inactive: 'Your account is disabled.',
+  sso_jit_disabled: 'Your account has not been added to this dashboard yet.',
+  sso_unavailable: 'The identity provider is unreachable. Try again, or sign in with a local account.',
+  sso_replay: 'That sign-in response was already used. Try again.',
+};
+
 const inputClass = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
 
 export default function LoginPage() {
@@ -27,7 +41,8 @@ export default function LoginPage() {
   }, []);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState(() => SSO_ERRORS[searchParams.get('error')] || null);
+  const [providers, setProviders] = useState([]);
 
   // Login form state
   const [username, setUsername] = useState('');
@@ -50,6 +65,7 @@ export default function LoginPage() {
         }
         setNeedsSetup(!!r.data.needsSetup);
         setDirectory(r.data.directory?.enabled ? r.data.directory : null);
+        setProviders(Array.isArray(r.data.providers) ? r.data.providers : []);
       })
       .catch(() => setNeedsSetup(false))
       .finally(() => setCheckingSetup(false));
@@ -71,6 +87,11 @@ export default function LoginPage() {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  // SSO is a full browser navigation: the server redirects to the identity provider.
+  const startSso = (slug) => {
+    window.location.assign(`/api/auth/sso/${encodeURIComponent(slug)}/start?returnTo=${encodeURIComponent(returnTo)}`);
   };
 
   const handleSetup = async (e) => {
@@ -204,6 +225,21 @@ export default function LoginPage() {
               className="mt-auto flex items-center justify-center gap-1.5 text-sm font-semibold px-3.5 py-2.5 bg-brand hover:bg-brand-dark text-white rounded-lg transition-colors disabled:opacity-40 cursor-pointer">
               <LogIn size={13} /> {submitting ? 'Signing in…' : 'Sign in'}
             </button>
+            {providers.length > 0 && (
+              <>
+                <div className="flex items-center gap-3 my-1">
+                  <span className="flex-1 border-t border-cohesity-border" />
+                  <span className="text-[11px] text-ink-faint">or</span>
+                  <span className="flex-1 border-t border-cohesity-border" />
+                </div>
+                {providers.map(pr => (
+                  <button key={pr.slug} type="button" onClick={() => startSso(pr.slug)}
+                    className="flex items-center justify-center gap-1.5 text-sm font-semibold px-3.5 py-2.5 border border-cohesity-border text-ink hover:bg-surface-overlay rounded-lg transition-colors cursor-pointer">
+                    <LogIn size={13} /> Sign in with {pr.name}
+                  </button>
+                ))}
+              </>
+            )}
           </form>
         )}
         </div>

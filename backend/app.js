@@ -41,6 +41,8 @@ const alertNotifyRouter = require('./routes/alertNotify');
 const authRouter = require('./routes/auth');
 const usersRouter = require('./routes/users');
 const directoryRouter = require('./routes/directory');
+const authSsoRouter = require('./routes/authSso');
+const idpRouter = require('./routes/idp');
 const pluginsRouter = require('./routes/plugins');
 const registry = require('./core/registry');
 const authenticate = require('./middleware/authenticate');
@@ -150,6 +152,7 @@ function createApp({ licenseGate = requireLicense } = {}) {
     requirePermission((req) => `logicmonitor:sources:${req.method === 'GET' ? 'view' : 'manage'}`),
     lmWebhook.adminRouter
   );
+  app.use('/api/auth/sso', authSsoRouter);
   app.use('/api/auth', authRouter);
   app.use('/api/license', licenseRouter);
   app.use(
@@ -163,6 +166,12 @@ function createApp({ licenseGate = requireLicense } = {}) {
     requirePermission((req) => `admin:users:${req.method === 'GET' ? 'view' : 'manage'}`),
     directoryRouter
   );
+  // Identity providers (OIDC / SAML, Okta): same gate. The sync router is built by a separate module.
+  {
+    const idpRouters = [idpRouter];
+    try { idpRouters.push(require('./routes/idpSync')); } catch (err) { if (err.code !== 'MODULE_NOT_FOUND') throw err; }
+    app.use('/api/idp', requirePermission((req) => `admin:users:${req.method === 'GET' ? 'view' : 'manage'}`), ...idpRouters);
+  }
 
   // Cohesity routes — mounted under /api/cohesity/* (WP4). New mounts first,
   // then deprecated aliases at the old unprefixed paths for back-compat with

@@ -328,6 +328,13 @@ function loadDictionary() {
     }
   } catch { /* LogicMonitor tables not present on this instance */ }
 
+  try {
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'idp_providers'").get()) {
+      add(db.prepare("SELECT name FROM idp_providers WHERE name IS NOT NULL AND name != ''").all(), 'SOURCE');
+      add(db.prepare("SELECT external_name AS name FROM groups WHERE provider = 'idp' AND external_name IS NOT NULL AND external_name != ''").all(), 'SOURCE');
+    }
+  } catch { /* identity provider tables not present on this instance */ }
+
   // App Services (usage-id groups): operator-chosen app labels, catalog names and the usage ids
   // travel in the daily brief, recovery readiness and network dependency reports.
   try {

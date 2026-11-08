@@ -419,6 +419,23 @@ function collectCiscoAlerts() {
   return require('../platforms/cisco').collectAlerts();
 }
 
+/** Identity provider Management API syncs that last failed. One item per
+ *  provider; a later good sync clears mgmt_last_status and ends reminders. */
+function collectIdpIssues() {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'idp_providers'").get()) return [];
+  const rows = db.prepare("SELECT id, name, mgmt_last_sync_at AS lastSync, mgmt_last_error AS err FROM idp_providers WHERE mgmt_last_status = 'error'").all();
+  return rows.map((r) => ({
+    sourceKey: `idp:sync:${r.id}`,
+    severity: 'warning',
+    host: r.name,
+    message: `Identity provider sync failed: ${r.err || 'unknown error'}`,
+    firstSeen: toIso(r.lastSync),
+    lastSeen: toIso(r.lastSync),
+    type: 'idp-sync-failed',
+    typeLabel: 'IdP sync failed',
+  }));
+}
+
 const COLLECTORS = {
   cohesity: collectCohesityAlerts,
   pure: collectPureAlerts,
@@ -433,6 +450,7 @@ const COLLECTORS = {
   logicmonitor: collectLogicmonitorAlerts,
   f5: collectF5Alerts,
   cisco: collectCiscoAlerts,
+  idp: collectIdpIssues,
 };
 
 let transportFactory = (config) => nodemailer.createTransport({
@@ -784,7 +802,8 @@ async function run() {
     const activeKeys = new Set();
     const collected = [];
     for (const [source, collect] of Object.entries(COLLECTORS)) {
-      if (!config.alertPlatforms[source]) continue;
+      // 'idp' is not a platform with a Global Settings toggle; it follows SMTP only.
+      if (source !== 'idp' && !config.alertPlatforms[source]) continue;
       let items;
       try {
         items = collect();
@@ -990,6 +1009,7 @@ module.exports = {
   initAlertNotifier,
   stopAlertNotifier,
   collectOpenAlerts,
+  collectIdpIssues,
   refreshTypeCatalog,
   createTransport,
   resolvePlatformRecipients,

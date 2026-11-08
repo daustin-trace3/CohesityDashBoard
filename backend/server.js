@@ -200,6 +200,7 @@ if (require.main === module) {
       require('./services/opsAgent').initOpsAgent();
       require('./services/workerHeartbeat').startHeartbeat('poller (inline in the API process)');
       directorySync.startScheduler();
+      require('./services/idpSync').startScheduler();
       // Start pollers only for enabled, actively-registered plugins (Cohesity's
       // poller above is not registry-managed in Phase 1 and always starts).
       for (const entry of registry.listPlugins()) {

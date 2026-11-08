@@ -231,6 +231,7 @@ const NEW_TABLES = [
   'bluecat_ai_reports', 'ariaops_ai_reports', 'brocade_ai_reports',
   'ai_audit_exchanges',
   'directory_sync_log',
+  'idp_providers', 'idp_auth_state', 'idp_seen_assertions', 'idp_sync_log',
   'netapp_aiqum_instances',
   'user_dashboards',
   'aws_accounts', 'aws_ec2_instances', 'aws_ebs_volumes', 'aws_lightsail_instances',

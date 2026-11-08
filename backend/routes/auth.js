@@ -6,6 +6,7 @@ const rateLimit = require('express-rate-limit');
 const db = require('../db/database');
 const directory = require('../services/directory');
 const directorySync = require('../services/directorySync');
+const idpProviders = require('../services/idpProviders');
 const logger = require('../utils/logger');
 const {
   hashPassword,
@@ -51,6 +52,19 @@ function setSessionCookie(req, res, sessionId) {
   });
 }
 
+/** Shared tail of every successful sign-in (password, directory, SSO): stamps
+ *  the login, opens the session, sets the cookie and logs. The caller sends
+ *  the response. `user` is a users row (snake_case) or a global account row. */
+function finishLogin(req, res, user, extraDetail = {}) {
+  db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(new Date().toISOString(), user.id);
+  const session = createSession(user.id);
+  setSessionCookie(req, res, session.id);
+  const extra = Object.keys(extraDetail).length ? ` ${JSON.stringify(extraDetail)}` : '';
+  logger.info(`[auth] login user=${user.username} provider=${user.auth_provider || 'local'}${extra}`);
+  const grants = resolveGrants(db, user.id);
+  return { session, grants };
+}
+
 function clearSessionCookie(req, res) {
   res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'lax', path: '/', secure: !!req.secure });
 }
@@ -72,6 +86,7 @@ router.get('/setup-status', (req, res) => {
     needsSetup: count === 0,
     authEnabled: authEnabled(),
     directory: { enabled: directory.isEnabled(), domain: directory.isEnabled() ? dir.domain : null },
+    providers: idpProviders.listEnabledPublic(),
   });
 });
 
@@ -150,12 +165,7 @@ router.post('/login', authLimiter, async (req, res, next) => {
       return invalid();
     }
 
-    db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(new Date().toISOString(), user.id);
-
-    const session = createSession(user.id);
-    setSessionCookie(req, res, session.id);
-
-    const grants = resolveGrants(db, user.id);
+    const { grants } = finishLogin(req, res, user);
     res.json({ user: userPayload(user, grants) });
   } catch (err) {
     next(err);
@@ -255,3 +265,6 @@ router.post('/disable', (req, res) => {
 });
 
 module.exports = router;
+module.exports.finishLogin = finishLogin;
+module.exports.setSessionCookie = setSessionCookie;
+module.exports.authLimiter = authLimiter;
