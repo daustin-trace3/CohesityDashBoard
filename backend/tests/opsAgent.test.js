@@ -1137,3 +1137,72 @@ describe('self-heal after a consequence fold', () => {
     } finally { registry.getPollerHandle = realGet; }
   });
 });
+
+describe('host evidence: related components and owner polls', () => {
+  const pollerStatus = require('../services/pollerStatus');
+  let vcId;
+  const cleanup = () => {
+    for (const t of ['vcenter_vms', 'vcenter_hosts', 'vcenter_vcenters', 'dell_devices', 'dell_ome_instances']) db.exec(`DELETE FROM ${t}`);
+    db.exec('DELETE FROM poller_status');
+  };
+  beforeEach(() => {
+    cleanup();
+    vcId = Number(db.prepare("INSERT INTO vcenter_vcenters (name, host, username, encrypted_credentials, last_poll_status, last_poll_at) VALUES ('vc-one', 'vc-one.lab', 'u', 'enc', 'success', '2026-11-08 10:00:00')").run().lastInsertRowid);
+    const vc2 = Number(db.prepare("INSERT INTO vcenter_vcenters (name, host, username, encrypted_credentials, last_poll_status) VALUES ('vc-two', 'vc-two.lab', 'u', 'enc', 'success')").run().lastInsertRowid);
+    pollerStatus.markEnd('vcenter', vcId, 'success');
+    pollerStatus.markEnd('vcenter', vc2, 'success');
+    db.prepare("INSERT INTO vcenter_hosts (vcenter_id, host_id, name, connection_state, service_tag) VALUES (?, 'h1', 'esx-rel-01', 'CONNECTED', 'SVCTAG77')").run(vcId);
+    db.prepare("INSERT INTO vcenter_hosts (vcenter_id, host_id, name, connection_state) VALUES (?, 'h2', 'esx-rel-02', 'DISCONNECTED')").run(vcId);
+    db.prepare("INSERT INTO vcenter_vms (vcenter_id, vm_id, name, host_name, power_state) VALUES (?, 'vm1', 'vm-rel-01', 'esx-rel-01', 'POWERED_ON')").run(vcId);
+    const ome = Number(db.prepare("INSERT INTO dell_ome_instances (name, host, username, encrypted_credentials) VALUES ('ome-r', 'ome.lab', 'u', 'enc')").run().lastInsertRowid);
+    db.prepare("INSERT INTO dell_devices (ome_id, device_id, name, service_tag, model, health) VALUES (?, 1, 'dell-rel-01', 'SVCTAG77', 'R750', 'warning')").run(ome);
+  });
+  afterEach(cleanup);
+
+  const evidenceFor = (host) => {
+    agent.groupTick(NOW, settings, { items: [item('vcenter', `v:${host}`, { host })], failed: [] });
+    const inc = incidents().find((i) => i.incident_key === `host:${host}`);
+    return agent.gatherIncidentEvidence(inc, alertsOf(inc.id)).hosts[0];
+  };
+
+  it('a VM alert lists its ESX host, the owning vCenter source and the Dell hardware', () => {
+    const h = evidenceFor('vm-rel-01');
+    const roles = h.related.map((r) => `${r.role}:${r.platform}:${r.name}`);
+    expect(roles).toContain('source:vcenter:vc-one');
+    expect(roles).toContain('parent:vcenter:esx-rel-01');
+    expect(roles).toContain('hardware:dell:dell-rel-01');
+    const hw = h.related.find((r) => r.role === 'hardware');
+    expect(hw).toMatchObject({ state: 'warning' });
+    expect(hw.detail).toMatch(/R750.*SVCTAG77.*warning/);
+    expect(h.related.find((r) => r.role === 'parent')).toMatchObject({ kind: 'host', state: 'ok', detail: 'ESX host' });
+    expect(h.platformPolls).toHaveLength(1);
+    expect(h.platformPollSummary.total).toBe(2);
+    expect(h.related.length).toBeLessThanOrEqual(8);
+  });
+
+  it('a vCenter source alert summarises the ESX hosts under it', () => {
+    const h = evidenceFor('vc-one');
+    const kids = h.related.filter((r) => r.role === 'children');
+    expect(kids.find((r) => /ESX hosts/.test(r.name))).toMatchObject({ name: '2 ESX hosts', detail: '1 of 2 not connected' });
+    expect(kids.find((r) => /VMs/.test(r.name))).toMatchObject({ name: '1 VMs' });
+    expect(h.hostRecords.some((r) => r.table === 'source')).toBe(true);
+  });
+
+  it('refuses an evidence auto-resolve when the summary says every poll failed', () => {
+    const open = [{ source_key: 'a1', cleared_at: null }];
+    const base = { verdict: 'degraded', hostRecords: [{ up: true }] };
+    expect(agent.evidenceResolveEligible(open, { hosts: [{ ...base, platformPolls: [], platformPollSummary: { total: 2, errored: 2 } }] })).toBe(false);
+    expect(agent.evidenceResolveEligible(open, { hosts: [{ ...base, platformPolls: [], platformPollSummary: { total: 2, errored: 1 } }] })).toBe(true);
+  });
+
+  it('the fallback digest names the owning source poll and unhealthy related components', () => {
+    const triage = agent.fallbackTriage({
+      alerts: [], incident: { platforms: ['vcenter'] },
+      hosts: [{ host: 'vm-rel-01', platform: 'vcenter', verdict: 'degraded', verdictReason: 'x', platformPolls: [{ sourceName: 'vc-one', lastPollStatus: 'error' }], related: [{ role: 'parent', name: 'esx-rel-02', state: 'error' }, { role: 'source', name: 'vc-one', state: 'ok' }] }],
+    });
+    const text = JSON.stringify(triage);
+    expect(text).toContain('vm-rel-01: source vc-one poll error');
+    expect(text).toContain('vm-rel-01: related parent esx-rel-02 (error)');
+    expect(text).not.toContain('related source vc-one');
+  });
+});

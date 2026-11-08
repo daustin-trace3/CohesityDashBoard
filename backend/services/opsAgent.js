@@ -1370,6 +1370,176 @@ function correlationEvidence(inc, alerts) {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Related components for the incident Hosts card
+// ---------------------------------------------------------------------------
+
+const RELATED_CAP = 8;
+const PARENT_LABEL = { host: 'ESX host', datastore: 'Datastore', switch: 'SAN switch', vpg: 'Zerto VPG', site: 'Zerto site', cluster: 'Cohesity cluster' };
+const SOURCE_TABLE_OF = {
+  vcenter: 'vcenter_vcenters', dell: 'dell_ome_instances', hyperv: 'hyperv_sources', brocade: 'brocade_sources',
+  bluecat: 'bluecat_sources', logicmonitor: 'lm_sources', unifi: 'unifi_sources', eon: 'eon_sources',
+  cohesity: 'clusters', pure: 'pure_arrays', netapp: 'netapp_arrays', aria: 'aria_instances',
+  ariaops: 'ariaops_instances', aws: 'aws_accounts',
+};
+
+function relTableCols(table) {
+  try { return new Set(db.prepare(`PRAGMA table_info('${table}')`).all().map((c) => c.name)); } catch { return new Set(); }
+}
+function pollState(status) {
+  if (status == null) return 'unknown';
+  const t = String(status).toLowerCase();
+  if (t === 'error') return 'error';
+  if (t === 'partial') return 'warning';
+  if (t === 'success' || t === 'ok') return 'ok';
+  return 'unknown';
+}
+function dellHealthState(h) {
+  const t = String(h || '').toLowerCase();
+  if (t === 'ok' || t === 'normal') return 'ok';
+  if (t === 'warning') return 'warning';
+  if (t === 'critical') return 'critical';
+  return 'unknown';
+}
+function namesLine(names) {
+  const list = [...new Set(names.filter(Boolean))];
+  if (!list.length) return null;
+  return list.length <= 3 ? list.join(', ') : `${list.slice(0, 3).join(', ')} and ${list.length - 3} more`;
+}
+
+/** Components related to one host of an incident, read from data ICC already
+ *  holds: the owning source, what the host sits under, the Dell hardware under
+ *  an ESX host, and what sits under the host. Capped at RELATED_CAP, deduped by
+ *  platform and name; every lookup is guarded so a miss contributes nothing. */
+function buildRelated(h) {
+  const out = [];
+  const seen = new Set();
+  const add = (e) => {
+    if (!e || !e.name || out.length >= RELATED_CAP) return;
+    const k = `${e.platform}|${String(e.name).toLowerCase()}`;
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push({ kind: e.kind, platform: e.platform, name: e.name, role: e.role, state: e.state || 'unknown', detail: e.detail || null });
+  };
+  const recs = h.hostRecords || [];
+  const sourceRec = recs.find((r) => r.table === 'source' && r.platform === h.platform) || null;
+  // The dependency and identity lookups key on the system's own name: the
+  // matched inventory record's name when there is one (the alert host may
+  // carry a volume or field suffix such as "vm:E:\"), else the alert host.
+  const invRec = recs.find((r) => r.table !== 'source' && r.table !== 'server360' && r.name) || null;
+  const subject = invRec ? invRec.name : h.host;
+  const polledIds = new Set();
+
+  // 1. Owning source(s).
+  try {
+    for (const p of (h.platformPolls || []).slice(0, 3)) {
+      polledIds.add(p.entityId);
+      // The host IS this source (a vCenter-level alert): its own row is the
+      // host record above, not a related component.
+      if (sourceRec && String(sourceRec.name || '').toLowerCase() === String(p.sourceName || '').toLowerCase()) continue;
+      add({ kind: 'source', platform: h.platform, name: p.sourceName, role: 'source', state: pollState(p.lastPollStatus), detail: p.lastPollEnd ? `polled ${p.lastPollEnd}` : 'no poll recorded' });
+    }
+  } catch { /* nothing */ }
+  try {
+    const table = SOURCE_TABLE_OF[h.platform];
+    if (table) {
+      const cols = relTableCols(table);
+      for (const r of recs) {
+        if (r.platform !== h.platform || r.sourceId == null || polledIds.has(Number(r.sourceId))) continue;
+        if (!cols.has('name')) break;
+        const row = db.prepare(`SELECT name${cols.has('last_poll_status') ? ', last_poll_status' : ''}${cols.has('last_poll_at') ? ', last_poll_at' : ''} FROM ${table} WHERE id = ?`).get(r.sourceId);
+        if (row) add({ kind: 'source', platform: h.platform, name: row.name, role: 'source', state: pollState(row.last_poll_status), detail: row.last_poll_at ? `polled ${row.last_poll_at}` : 'no poll recorded' });
+      }
+    }
+  } catch { /* nothing */ }
+
+  // 2. What the host sits under.
+  let parents = [];
+  try { parents = agentDeps.parentsOf(db, subject, { lm: true }) || []; } catch { parents = []; }
+  for (const par of parents) {
+    if (par.kind === 'source') continue;
+    let state = 'unknown';
+    try {
+      if (par.kind === 'host') {
+        const hv = relTableCols('vcenter_hosts');
+        const row = hv.has('connection_state') ? db.prepare('SELECT connection_state, in_maintenance FROM vcenter_hosts WHERE lower(name) = lower(?) LIMIT 1').get(par.parent) : null;
+        if (row) state = String(row.connection_state || '').toUpperCase() === 'CONNECTED' ? (row.in_maintenance ? 'warning' : 'ok') : 'error';
+        else if (relTableCols('hyperv_hosts').has('state')) {
+          const hrow = db.prepare('SELECT state FROM hyperv_hosts WHERE lower(name) = lower(?) LIMIT 1').get(par.parent);
+          if (hrow) state = String(hrow.state || '').toLowerCase() === 'up' ? 'ok' : 'error';
+        }
+      } else if (par.kind === 'datastore' && relTableCols('vcenter_datastores').has('accessible')) {
+        const row = db.prepare('SELECT accessible FROM vcenter_datastores WHERE lower(name) = lower(?) LIMIT 1').get(par.parent);
+        if (row && row.accessible != null) state = Number(row.accessible) === 1 ? 'ok' : 'error';
+      }
+    } catch { state = 'unknown'; }
+    add({ kind: par.kind, platform: par.platform, name: par.parent, role: 'parent', state, detail: PARENT_LABEL[par.kind] || par.kind });
+  }
+
+  // 3. Dell hardware under the host or under its ESX host.
+  try {
+    const idx = identityIndex();
+    if (idx) {
+      const tokens = [subject, ...parents.filter((p) => p.kind === 'host').map((p) => p.parent)];
+      for (const tok of tokens) {
+        const ref = hostIdentity.resolveToken(idx, tok);
+        if (!ref || !(ref.platforms || []).includes('dell')) continue;
+        if (h.platform === 'dell' && tok === subject) continue;
+        const tag = ref.dell?.serviceTag || ref.serviceTag || null;
+        if (!tag || !relTableCols('dell_devices').has('service_tag')) continue;
+        const row = db.prepare('SELECT name, model, service_tag, health FROM dell_devices WHERE lower(service_tag) = lower(?) LIMIT 1').get(tag);
+        if (row) {
+          add({
+            kind: 'hardware', platform: 'dell', name: row.name || row.service_tag, role: 'hardware', state: dellHealthState(row.health),
+            detail: `Dell ${row.model || 'server'}, service tag ${row.service_tag}, health ${row.health || 'unknown'}`,
+          });
+          break;
+        }
+      }
+    }
+  } catch { /* nothing */ }
+
+  // 4. What sits under the host.
+  try {
+    const srcId = sourceRec ? sourceRec.sourceId : null;
+    if (sourceRec && srcId != null && (h.platform === 'vcenter' || h.platform === 'hyperv')) {
+      const hostTable = h.platform === 'vcenter' ? 'vcenter_hosts' : 'hyperv_hosts';
+      const vmTable = h.platform === 'vcenter' ? 'vcenter_vms' : 'hyperv_vms';
+      const idCol = h.platform === 'vcenter' ? 'vcenter_id' : 'source_id';
+      const stCol = h.platform === 'vcenter' ? 'connection_state' : 'state';
+      const hostCols = relTableCols(hostTable);
+      if (hostCols.has(idCol) && hostCols.has('name')) {
+        const rows = db.prepare(`SELECT name${hostCols.has(stCol) ? `, ${stCol} AS st` : ''} FROM ${hostTable} WHERE ${idCol} = ?`).all(srcId);
+        if (rows.length) {
+          const ok = h.platform === 'vcenter' ? (v) => String(v || '').toUpperCase() === 'CONNECTED' : (v) => String(v || '').toLowerCase() === 'up';
+          const bad = hostCols.has(stCol) ? rows.filter((r) => !ok(r.st)).length : 0;
+          add({
+            kind: 'host', platform: h.platform, name: `${rows.length} ${h.platform === 'vcenter' ? 'ESX hosts' : 'Hyper-V hosts'}`, role: 'children',
+            state: 'unknown', detail: bad ? `${bad} of ${rows.length} not connected` : (namesLine(rows.map((r) => r.name)) || null),
+          });
+        }
+      }
+      const vmCols = relTableCols(vmTable);
+      if (vmCols.has(idCol)) {
+        const n = db.prepare(`SELECT COUNT(*) AS n FROM ${vmTable} WHERE ${idCol} = ?`).get(srcId).n;
+        if (n) add({ kind: 'vm', platform: h.platform, name: `${n} VMs`, role: 'children', state: 'unknown', detail: null });
+      }
+    } else {
+      for (const kind of ['host', 'datastore', 'switch', 'cluster', 'source']) {
+        const kids = agentDeps.childrenOf(db, subject, kind) || [];
+        if (!kids.length) continue;
+        const byKind = new Map();
+        for (const k of kids) { const l = byKind.get(k.childKind) || []; l.push(k.host); byKind.set(k.childKind, l); }
+        for (const [ck, names] of byKind) {
+          const label = ck === 'vm' ? 'VMs' : ck === 'host' ? 'hosts' : ck === 'object' ? 'objects' : `${ck}s`;
+          add({ kind: ck, platform: kids[0].platform, name: `${names.length} ${label}`, role: 'children', state: 'unknown', detail: namesLine(names) });
+        }
+      }
+    }
+  } catch { /* nothing */ }
+  return out;
+}
+
 function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
   const hosts = [];
   const seen = new Set();
@@ -1389,14 +1559,17 @@ function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
         platform: a.platform, source_key: a.source_key, severity: a.severity, host: a.host,
         message: a.message, first_seen: a.first_seen, detected_at: a.attached_at,
       });
-      hosts.push({
+      const hostEv = {
         host: a.host, platform: a.platform,
         verdict: ev.evidenceVerdict, verdictReason: ev.evidenceReason,
         app: ev.app || undefined,
         hostRecords: ev.hostRecords, sanPaths: ev.sanPaths, platformPolls: ev.platformPolls,
+        platformPollSummary: ev.platformPollSummary,
         metricsFreshness: ev.metricsFreshness, relatedOpenEvents: ev.relatedOpenEvents,
         relatedOtherPlatformEvents: ev.relatedOtherPlatformEvents,
-      });
+      };
+      try { hostEv.related = buildRelated(hostEv); } catch { hostEv.related = []; }
+      hosts.push(hostEv);
     } catch (err) {
       hosts.push({ host: a.host, platform: a.platform, error: `evidence gather failed: ${err.message}` });
     }
@@ -1522,8 +1695,10 @@ function fallbackTriage(evidence) {
     if (h.error) { reviewed.push(`${h.host}: ${h.error}`); continue; }
     reviewed.push(`${h.host}: ICC evidence verdict ${h.verdict} (${h.verdictReason})`);
     for (const r of (h.hostRecords || [])) reviewed.push(`${h.host}: ${platformMeta(r.platform).label} record ${r.name || ''} ${r.up === false ? 'DOWN' : r.up === true ? 'up' : 'no live state'}`.trim());
-    const polls = (h.platformPolls || []).filter((p) => p.lastPollStatus === 'error');
-    if (polls.length) reviewed.push(`${platformMeta(h.platform).label}: ${polls.length} source poll(s) failing`);
+    for (const p of (h.platformPolls || [])) reviewed.push(`${h.host}: source ${p.sourceName} poll ${p.lastPollStatus || 'not recorded'}`);
+    for (const r of (h.related || [])) {
+      if (r.state === 'error' || r.state === 'warning' || r.state === 'critical') reviewed.push(`${h.host}: related ${r.role} ${r.name} (${r.state})`);
+    }
     if ((h.sanPaths || []).length) reviewed.push(`${h.host}: ${h.sanPaths.length} SAN path record(s) checked`);
     if ((h.relatedOtherPlatformEvents || []).length) reviewed.push(`${h.host}: ${h.relatedOtherPlatformEvents.length} open alert(s) on other platforms for the same host`);
   }
@@ -2282,6 +2457,7 @@ function evidenceResolveEligible(alerts, evidence) {
   if (!hosts.length) return false;
   if (hosts.some((h) => h.verdict === 'offline' || h.error)) return false;
   if (hosts.some((h) => (h.platformPolls || []).some((p) => p.lastPollStatus === 'error'))) return false;
+  if (hosts.some((h) => h.platformPollSummary && h.platformPollSummary.total > 0 && h.platformPollSummary.errored === h.platformPollSummary.total)) return false;
   if (!hosts.some((h) => (h.hostRecords || []).some((r) => r.up === true))) return false;
   return true;
 }

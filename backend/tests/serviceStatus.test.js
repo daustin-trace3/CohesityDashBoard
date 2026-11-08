@@ -825,3 +825,58 @@ describe('Pure1 fleet poller as a Pure source', () => {
     expect(f.ageMinutes).toBeLessThanOrEqual(11);
   });
 });
+
+describe('host evidence scoped to the owning source', () => {
+  let vcA;
+  let vcB;
+  let vcC;
+  beforeEach(() => {
+    db.exec('DELETE FROM vcenter_hosts');
+    db.exec('DELETE FROM vcenter_vcenters');
+    const ins = db.prepare("INSERT INTO vcenter_vcenters (name, host, username, encrypted_credentials, last_poll_status, last_poll_at) VALUES (?, ?, 'u', 'enc', ?, '2026-11-08 10:00:00')");
+    vcA = Number(ins.run('vcsjx1gcpr1', 'vcsjx1gcpr1.corp.local', 'success').lastInsertRowid);
+    vcB = Number(ins.run('vcnyc1', 'vcnyc1.corp.local', 'success').lastInsertRowid);
+    vcC = Number(ins.run('vcdal1', 'vcdal1.corp.local', 'success').lastInsertRowid);
+    for (const id of [vcA, vcB, vcC]) pollerStatus.markEnd('vcenter', id, 'success');
+  });
+  afterEach(() => {
+    db.exec('DELETE FROM vcenter_hosts');
+    db.exec('DELETE FROM vcenter_vcenters');
+  });
+
+  it('a) the vCenter appliance as host: source record, degraded, only its own poll row, summary of all three', () => {
+    const ev = svc.gatherEvidence({ platform: 'vcenter', host: 'vcsjx1gcpr1', source_key: 'x', severity: 'critical', message: 'm' });
+    const rec = ev.hostRecords.find((r) => r.table === 'source');
+    expect(rec).toMatchObject({ platform: 'vcenter', name: 'vcsjx1gcpr1', up: true, sourceId: vcA });
+    expect(ev.evidenceVerdict).toBe('degraded');
+    expect(ev.evidenceReason).toMatch(/reached this source/i);
+    expect(ev.platformPolls.map((p) => p.entityId)).toEqual([vcA]);
+    expect(ev.platformPollSummary).toMatchObject({ total: 3, errored: 0 });
+  });
+
+  it('b) the same source with an errored last poll reads offline', () => {
+    db.prepare("UPDATE vcenter_vcenters SET last_poll_status = 'error', last_poll_error = 'timeout' WHERE id = ?").run(vcA);
+    const ev = svc.gatherEvidence({ platform: 'vcenter', host: 'vcsjx1gcpr1', source_key: 'x', severity: 'critical', message: 'm' });
+    expect(ev.hostRecords.find((r) => r.table === 'source')).toMatchObject({ up: false });
+    expect(ev.evidenceVerdict).toBe('offline');
+    expect(ev.evidenceReason).toMatch(/could not reach this source/i);
+  });
+
+  it('c) an ESX host alert resolves platformPolls to its own vcenter only', () => {
+    db.prepare("INSERT INTO vcenter_hosts (vcenter_id, host_id, name, connection_state) VALUES (?, 'h1', 'esx-b-01', 'CONNECTED')").run(vcB);
+    const ev = svc.gatherEvidence({ platform: 'vcenter', host: 'esx-b-01', source_key: 'x', severity: 'critical', message: 'm' });
+    expect(ev.hostRecords.find((r) => r.name === 'esx-b-01').sourceId).toBe(vcB);
+    expect(ev.platformPolls.map((p) => p.entityId)).toEqual([vcB]);
+    expect(ev.platformPollSummary.total).toBe(3);
+  });
+
+  it('d) a host that matches nothing: no poll rows, summary carries the totals, all-errored still reads offline', () => {
+    for (const id of [vcA, vcB, vcC]) pollerStatus.markEnd('vcenter', id, 'error');
+    const ev = svc.gatherEvidence({ platform: 'vcenter', host: 'nothing-here', source_key: 'x', severity: 'critical', message: 'm' });
+    expect(ev.platformPolls).toEqual([]);
+    expect(ev.platformPollSummary).toMatchObject({ total: 3, errored: 3 });
+    expect(ev.platformPollSummary.names.length).toBe(3);
+    expect(ev.evidenceVerdict).toBe('offline');
+    expect(ev.evidenceReason).toMatch(/every recent poll/i);
+  });
+});

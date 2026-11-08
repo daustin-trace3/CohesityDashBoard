@@ -417,12 +417,18 @@ function createAnonymizer() {
    *  Object KEYS are scrubbed too (dictionary and pattern passes, none of the
    *  key-name rules): gathers that index a map by group path, device or site
    *  name ("Network/Sites/Phoenix DC": {...}) used to leak the name as a key. */
+  const PLAIN_KEY_RE = /^[A-Za-z][A-Za-z0-9_]*$/;
   function anonymize(value, key) {
     if (typeof value === 'string') return scrubText(value, key);
     if (Array.isArray(value)) return value.map((v) => anonymize(v, key));
     if (value && typeof value === 'object') {
       const out = {};
-      for (const [k, v] of Object.entries(value)) out[scrubText(k)] = anonymize(v, k);
+      // Keys are scrubbed because a gather may key an object by an entity name
+      // ("Network/Sites/Phoenix DC"). A plain identifier key (platform, host,
+      // last_poll_status) is a field name, never an entity, and tokenizing it
+      // hides the field from the model (an AWS allocation tag value "platform"
+      // once turned every platform field into OBJECT-1).
+      for (const [k, v] of Object.entries(value)) out[PLAIN_KEY_RE.test(k) ? k : scrubText(k)] = anonymize(v, k);
       return out;
     }
     return value;

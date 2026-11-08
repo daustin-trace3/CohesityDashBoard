@@ -161,6 +161,18 @@ const recordDetail = (r) => {
 };
 const parseList = (v) => { if (Array.isArray(v)) return v; try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; } };
 
+const ROLE_LABEL = { source: 'Source', parent: 'Parent', hardware: 'Hardware', children: 'Under it' };
+// "polled <iso stamp>" from the backend reads as "polled 5 min ago" here.
+const relatedDetail = (d) => {
+  const m = /^polled (\S+)$/.exec(String(d || ''));
+  return m && !Number.isNaN(Date.parse(m[1])) ? `polled ${timeAgo(m[1])}` : d;
+};
+const relatedTone = (st) => (st === 'error' || st === 'critical' ? 'crit' : st === 'warning' ? 'warn' : st === 'ok' ? 'ok' : null);
+const sourceDetail = (r) => {
+  const f = (r && typeof r.fields === 'object' && r.fields) || {};
+  return [f.last_poll_at ? `polled ${timeAgo(f.last_poll_at)}` : 'no poll recorded', isScalar(f.last_poll_error) ? String(f.last_poll_error) : null].filter(Boolean).join(', ');
+};
+
 function NameLink({ platform, kind, name }) {
   const to = subjectLink(platform, kind, name);
   return to ? <Link to={to} className="text-brand hover:underline">{name}</Link> : <>{name}</>;
@@ -173,8 +185,15 @@ function HostsSection({ hosts }) {
       <div className="space-y-3">
         {hosts.map((h, i) => {
           const records = (Array.isArray(h.hostRecords) ? h.hostRecords : []).filter((r) => r && r.table !== 'server360');
-          const polls = (Array.isArray(h.platformPolls) ? h.platformPolls : []).filter((p) => p && p.sourceName);
+          const sourceNames = new Set((Array.isArray(h.hostRecords) ? h.hostRecords : []).filter((r) => r && r.table === 'source').map((r) => String(r.name || '').toLowerCase()));
+          // The owner poll list repeats a source record row; show it only for sources the records do not cover.
+          const polls = (Array.isArray(h.platformPolls) ? h.platformPolls : []).filter((p) => p && p.sourceName && !sourceNames.has(String(p.sourceName).toLowerCase()));
           const paths = Array.isArray(h.sanPaths) ? h.sanPaths : [];
+          const related = (Array.isArray(h.related) ? h.related : []).filter((r) => r && r.name);
+          const relatedSources = new Set(related.filter((r) => r.role === 'source').map((r) => String(r.name).toLowerCase()));
+          // A source the Related table already lists is not repeated in the owner poll list.
+          const ownerPolls = polls.filter((p) => !relatedSources.has(String(p.sourceName).toLowerCase()));
+          const sum = h.platformPollSummary && typeof h.platformPollSummary === 'object' ? h.platformPollSummary : null;
           return (
             <div key={`${h.host}-${i}`} className="rounded-md border border-cohesity-border px-3 py-2.5">
               <p className="flex items-center gap-2 flex-wrap text-[13px] text-ink">
@@ -193,10 +212,12 @@ function HostsSection({ hosts }) {
                         const ud = upDown(r);
                         return (
                           <tr key={ri} className="border-b border-cohesity-border/40 last:border-0 align-top">
-                            <td className="py-1 pr-3 text-ink-muted whitespace-nowrap">{r.platform || h.platform || '-'}</td>
+                            <td className="py-1 pr-3 text-ink-muted whitespace-nowrap">{r.table === 'source' ? `${r.platform || h.platform || '-'} source` : (r.platform || h.platform || '-')}</td>
                             <td className="py-1 pr-3 text-ink-muted"><NameLink platform={r.platform || h.platform} kind={recordKind(r.platform || h.platform)} name={r.name || r.host || '-'} /></td>
-                            <td className="py-1 pr-3">{ud ? <Badge tone={/down|crit|offline|disconn|error|fail/i.test(String(ud)) ? 'crit' : /warn|degrad/i.test(String(ud)) ? 'warn' : 'ok'}>{String(ud)}</Badge> : '-'}</td>
-                            <td className="py-1 text-ink-faint break-words">{extra || '-'}</td>
+                            <td className="py-1 pr-3">{r.table === 'source'
+                              ? (ud ? <Badge tone={ud === 'down' ? 'crit' : 'ok'}>{ud === 'down' ? 'Unreachable' : 'Reachable'}</Badge> : 'No poll yet')
+                              : (ud ? <Badge tone={/down|crit|offline|disconn|error|fail/i.test(String(ud)) ? 'crit' : /warn|degrad/i.test(String(ud)) ? 'warn' : 'ok'}>{String(ud)}</Badge> : '-')}</td>
+                            <td className="py-1 text-ink-faint break-words">{(r.table === 'source' ? sourceDetail(r) : extra) || '-'}</td>
                           </tr>
                         );
                       })}
@@ -204,9 +225,12 @@ function HostsSection({ hosts }) {
                   </table>
                 </div>
               )}
-              {polls.length > 0 && (
-                <ul className="mt-2 space-y-0.5 text-[11px] text-ink-muted">
-                  {polls.map((p, pi) => (
+              {ownerPolls.length > 0 && (
+                <p className="mt-2 text-[11px] font-semibold text-ink-faint">Owning source</p>
+              )}
+              {ownerPolls.length > 0 && (
+                <ul className="mt-0.5 space-y-0.5 text-[11px] text-ink-muted">
+                  {ownerPolls.map((p, pi) => (
                     <li key={pi}>
                       {p.sourceName}: {p.lastPollStatus === 'error' ? <Badge tone="crit">error</Badge> : (p.lastPollStatus || '-')}
                       {p.lastPollEnd ? <span className="text-ink-faint"> {timeAgo(p.lastPollEnd)}</span> : null}
@@ -214,6 +238,32 @@ function HostsSection({ hosts }) {
                     </li>
                   ))}
                 </ul>
+              )}
+              {sum && sum.total > polls.length && (
+                <p className="mt-1 text-[11px] text-ink-faint">{`${sum.total} sources polled on ${h.platform}${sum.errored ? `, ${sum.errored} failing` : ''}`}</p>
+              )}
+              {related.length > 0 && (
+                <div className="mt-2">
+                  <p className="text-[11px] font-semibold text-ink-faint">Related components</p>
+                  <div className="overflow-x-auto mt-1">
+                    <table className="w-full text-[11px]">
+                      <thead><tr className="text-left text-ink-faint border-b border-cohesity-border"><th className="py-1 pr-3 font-semibold">Role</th><th className="py-1 pr-3 font-semibold">Component</th><th className="py-1 pr-3 font-semibold">State</th><th className="py-1 font-semibold">Detail</th></tr></thead>
+                      <tbody>
+                        {related.map((r, ri) => {
+                          const tone = relatedTone(r.state);
+                          return (
+                            <tr key={ri} className="border-b border-cohesity-border/40 last:border-0 align-top">
+                              <td className="py-1 pr-3 text-ink-muted whitespace-nowrap">{ROLE_LABEL[r.role] || r.role}</td>
+                              <td className="py-1 pr-3 text-ink-muted">{r.role === 'children' ? r.name : <NameLink platform={r.platform} kind={recordKind(r.platform)} name={r.name} />}</td>
+                              <td className="py-1 pr-3">{tone ? <Badge tone={tone}>{r.state}</Badge> : '-'}</td>
+                              <td className="py-1 text-ink-faint break-words">{relatedDetail(r.detail) || '-'}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               )}
               {typeof h.metricsFreshness?.ageMinutes === 'number' && <p className="mt-1.5 text-[11px] text-ink-muted">Metrics age: {Math.round(h.metricsFreshness.ageMinutes)} min</p>}
               {paths.length > 0 && <p className="mt-1.5 text-[11px] text-ink-muted">SAN paths: {paths.length}</p>}

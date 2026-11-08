@@ -429,7 +429,12 @@ function hostCandidates(host) {
   const beforeParen = raw.split(' (')[0].trim();
   const parenMatch = raw.match(/\(([^)]*)\)\s*$/);
   const inParen = parenMatch ? parenMatch[1].trim() : '';
-  for (const c of [raw, beforeParen, inParen]) {
+  // "<vm>:<volume>" (vCenter guest volumes, Hyper-V "<host>:<field>"): the part
+  // before the first colon names the system. IPv6 and "C:\" style volumes are
+  // left alone (the colon form must start with a letter and carry no second colon
+  // before a letter run).
+  const beforeColon = /^[A-Za-z][A-Za-z0-9._-]*:/.test(raw) ? raw.split(':')[0].trim() : '';
+  for (const c of [raw, beforeParen, inParen, beforeColon]) {
     if (!c) continue;
     out.add(c.toLowerCase());
     const stripped = c.split('.')[0].trim();
@@ -487,15 +492,34 @@ function vcenterBaseline30d(table, nameCol, vcenterId, name, cpuCol, memCol) {
   } catch { return { cpuAvg: null, cpuMax: null, memAvg: null, memMax: null }; }
 }
 
+function sourceDef(platform, table, hostCol) {
+  return {
+    platform,
+    table: 'source',
+    sourceCol: 'id',
+    find: (c) => (hostCol ? twoInQuery(table, 'name', hostCol, c) : oneInQuery(table, 'name', c)),
+    fields: (r) => ({
+      kind: 'source',
+      last_poll_status: r.last_poll_status ?? null,
+      last_poll_at: r.last_poll_at ?? null,
+      last_poll_error: r.last_poll_error ?? null,
+      host: r.host || r.url || r.endpoint || r.mgmt_host || null,
+    }),
+    up: (r) => (r.last_poll_status == null ? null : r.last_poll_status !== 'error'),
+  };
+}
+
 const HOST_TABLE_DEFS = [
   {
     platform: 'dell',
+    sourceCol: 'ome_id',
     find: (c) => twoInQuery('dell_devices', 'name', 'service_tag', c),
     fields: (r) => ({ model: r.model, health: r.health, power_state: r.power_state, connection_state: r.connection_state, ip_address: r.ip_address, managed_state: r.managed_state }),
     up: (r) => r.connection_state == 1 && String(r.power_state || '').toLowerCase() !== 'off',
   },
   {
     platform: 'vcenter',
+    sourceCol: 'vcenter_id',
     find: (c) => oneInQuery('vcenter_hosts', 'name', c),
     fields: (r) => {
       const b = vcenterBaseline30d('vcenter_host_daily', 'host_name', r.vcenter_id, r.name,
@@ -511,6 +535,7 @@ const HOST_TABLE_DEFS = [
   },
   {
     platform: 'vcenter',
+    sourceCol: 'vcenter_id',
     find: (c) => twoInQuery('vcenter_vms', 'name', 'guest_hostname', c),
     fields: (r) => {
       const b = vcenterBaseline30d('vcenter_vm_daily', 'vm_name', r.vcenter_id, r.name,
@@ -531,64 +556,84 @@ const HOST_TABLE_DEFS = [
   },
   {
     platform: 'unifi',
+    sourceCol: 'source_id',
     find: (c) => oneInQuery('unifi_devices', 'name', c),
     fields: (r) => ({ model: r.model, state: r.state, ip: r.ip, uptime: r.uptime, adopted: r.adopted }),
     up: (r) => Number(r.state) === 1,
   },
   {
     platform: 'logicmonitor',
+    sourceCol: 'source_id',
     find: (c) => twoInQuery('lm_devices', 'display_name', 'name', c),
     fields: (r) => ({ model: r.model, vendor: r.vendor, hostStatus: r.host_status, collector: r.collector_description }),
     up: (r) => r.host_status === 'normal',
   },
   {
     platform: 'brocade',
+    sourceCol: 'source_id',
     find: (c) => oneInQuery('brocade_switches', 'name', c),
     fields: (r) => ({ state: r.state, status: r.status, operational_status: r.operational_status, health: r.health, is_missing: r.is_missing, ip_address: r.ip_address }),
     up: (r) => (r.is_missing ? false : (/online|healthy|ok/i.test(String(r.operational_status || r.status || r.state || '')) ? true : null)),
   },
   {
     platform: 'bluecat',
+    sourceCol: 'source_id',
     find: (c) => oneInQuery('bluecat_servers', 'name', c),
     fields: (r) => ({ connected: r.connected, state: r.state, address: r.address, profile: r.profile }),
     up: (r) => Number(r.connected) === 1,
   },
   {
     platform: 'cohesity',
+    sourceCol: 'id',
     find: (c) => oneInQuery('clusters', 'name', c),
     fields: (r) => ({ connection_type: r.connection_type, vip: r.vip, latestMetricsCapturedAt: latestCaptured('metrics_history', 'cluster_id', 'captured_at', r.id) }),
     up: () => null,
   },
   {
     platform: 'pure',
+    sourceCol: 'id',
     find: (c) => oneInQuery('pure_arrays', 'name', c),
     fields: (r) => ({ mgmt_host: r.mgmt_host, latestMetricsCapturedAt: latestCaptured('pure_metrics_history', 'array_id', 'captured_at', r.id) }),
     up: () => null,
   },
   {
     platform: 'netapp',
+    sourceCol: 'id',
     find: (c) => oneInQuery('netapp_arrays', 'name', c),
     fields: (r) => ({ mgmt_host: r.mgmt_host, version: r.version, latestMetricsCapturedAt: latestCaptured('netapp_metrics_history', 'array_id', 'captured_at', r.id) }),
     up: () => null,
   },
   {
     platform: 'aria',
+    sourceCol: 'id',
     find: (c) => oneInQuery('aria_instances', 'name', c),
     fields: (r) => ({ reachable: r.reachable, last_poll_status: r.last_poll_status }),
     up: (r) => (r.reachable == null ? null : Number(r.reachable) === 1),
   },
   {
     platform: 'ariaops',
+    sourceCol: 'instance_id',
     find: (c) => oneInQuery('ariaops_resources', 'name', c),
     fields: (r) => ({ health: r.health, kind: r.kind }),
     up: (r) => (r.health ? !/RED|GREY/i.test(String(r.health)) : null),
   },
   {
     platform: 'aws',
+    sourceCol: 'id',
     find: (c) => oneInQuery('aws_accounts', 'name', c),
     fields: (r) => ({ last_poll_status: r.last_poll_status }),
     up: () => null,
   },
+  // The source itself (a vCenter, OME instance, SANnav ...): an alert whose host
+  // is the source's own name matches here instead of falling to "no inventory
+  // record". table 'source' marks the record for deriveVerdict and the modal.
+  sourceDef('vcenter', 'vcenter_vcenters', 'host'),
+  sourceDef('dell', 'dell_ome_instances', 'host'),
+  sourceDef('brocade', 'brocade_sources', 'host'),
+  sourceDef('bluecat', 'bluecat_sources', 'host'),
+  sourceDef('logicmonitor', 'lm_sources', null),
+  sourceDef('unifi', 'unifi_sources', 'host'),
+  sourceDef('eon', 'eon_sources', null),
 ];
 
 // Platforms whose *_sources / *_instances table carries its own
@@ -623,6 +668,49 @@ function platformPollsFor(platform) {
     lastPollStatus: s.lastPollStatus,
     isSyncing: s.isSyncing,
   }));
+}
+
+/** Roll-up of a platform's polled sources, so the verdict rule and the model
+ *  still know whether the whole platform is failing when only the owning
+ *  source's rows are listed. */
+function summarizePolls(all) {
+  const errored = all.filter((p) => p.lastPollStatus === 'error');
+  return {
+    total: all.length,
+    errored: errored.length,
+    syncing: all.filter((p) => p.isSyncing).length,
+    names: errored.slice(0, 3).map((p) => p.sourceName),
+  };
+}
+
+/** The poll rows of the source(s) that own this event: the poll:/stale: key's
+ *  source, or the source behind a matched host record. Never every source of
+ *  the platform; the roll-up of all of them rides in platformPollSummary. */
+function ownerPollsFor(event, hostRecords) {
+  const all = platformPollsFor(event.platform);
+  const summary = summarizePolls(all);
+  const ids = new Set();
+  let keyed = false;
+  const m = /^(?:poll|stale):(.+)$/.exec(String(event.source_key || event.sourceKey || ''));
+  if (m) { keyed = true; ids.add(parseEntityId(m[1])); }
+  let parent = null;
+  try { parent = registry.isDerived(event.platform) ? registry.getPlugin(event.platform)?.derivedFrom : null; } catch { parent = null; }
+  for (const r of hostRecords || []) {
+    if (r.sourceId == null) continue;
+    if (r.platform !== event.platform && r.platform !== parent) continue;
+    ids.add(Number.isNaN(Number(r.sourceId)) ? r.sourceId : Number(r.sourceId));
+  }
+  let polls = all.filter((p) => ids.has(p.entityId));
+  if (!polls.length && keyed) polls = all;
+  return { polls, summary };
+}
+
+/** The *_sources rows behind the owner polls, matched by name; [] when the
+ *  event resolved to no owning source. */
+function ownerSourceRows(platform, polls) {
+  if (!polls || !polls.length) return [];
+  const names = new Set(polls.map((p) => String(p.sourceName || '').toLowerCase()));
+  return sourcesFor(platform).filter((s) => names.has(String(s.name || '').toLowerCase()));
 }
 
 // table/timestamp-column per platform's metrics history, for the alerting
@@ -750,7 +838,10 @@ function gatherEvidence(event) {
   for (const def of HOST_TABLE_DEFS) {
     try {
       for (const row of def.find(candidates)) {
-        hostRecords.push({ platform: def.platform, name: row.name, up: def.up(row), fields: def.fields(row) });
+        const rec = { platform: def.platform, name: row.name, up: def.up(row), fields: def.fields(row) };
+        if (def.table) rec.table = def.table;
+        if (def.sourceCol && row[def.sourceCol] != null) rec.sourceId = row[def.sourceCol];
+        hostRecords.push(rec);
       }
     } catch { /* isolated per host-table definition */ }
   }
@@ -764,13 +855,17 @@ function gatherEvidence(event) {
     } catch { /* one bad provider must not break the gather */ }
   }
 
+  const owner = ownerPollsFor(event, hostRecords);
   const evidence = {
     alert: {
       platform: event.platform, sourceKey: event.source_key, severity: event.severity,
       host: event.host, message: event.message, firstSeen: event.first_seen, detectedAt: event.detected_at,
     },
-    platformPolls: platformPollsFor(event.platform),
-    sources: sourcesFor(event.platform),
+    platformPolls: owner.polls,
+    platformPollSummary: owner.summary,
+    // Only the owning source's own row (status, error, last poll); the whole
+    // platform is described by platformPollSummary, never listed.
+    sources: ownerSourceRows(event.platform, owner.polls),
     hostRecords,
     sanPaths: sanPathsFor(candidates),
     metricsFreshness: metricsFreshnessFor(event.platform),
@@ -800,6 +895,10 @@ function deriveVerdict(event, evidence) {
   const ownRecords = hostRecords.filter((r) => r.platform === platform);
   const otherRecords = hostRecords.filter((r) => r.platform !== platform);
 
+  const sourceRecs = ownRecords.filter((r) => r.table === 'source');
+  if (sourceRecs.some((r) => r.up === false)) {
+    return { verdict: 'offline', reason: 'ICC could not reach this source on its last poll', confidence: 'high' };
+  }
   if (ownRecords.some((r) => r.up === false)) {
     return { verdict: 'offline', reason: 'ICC inventory shows this host as down or unreachable', confidence: 'high' };
   }
@@ -808,6 +907,9 @@ function deriveVerdict(event, evidence) {
   const otherDown = otherRecords.find((r) => r.up === false);
   if (otherDown) {
     return { verdict: 'offline', reason: `${platformMeta(otherDown.platform).label} reports this host as down or not responding`, confidence: ownRecords.some((r) => r.up === true) ? 'medium' : 'medium' };
+  }
+  if (sourceRecs.some((r) => r.up === true)) {
+    return { verdict: 'degraded', reason: 'ICC reached this source on its last poll; the alert is a condition it reports, not a reachability fault', confidence: 'high' };
   }
   if (ownRecords.some((r) => r.up === true)) {
     return { verdict: 'degraded', reason: 'ICC inventory shows this host is still up', confidence: 'high' };
@@ -823,8 +925,11 @@ function deriveVerdict(event, evidence) {
     }
   }
 
+  const sum = evidence?.platformPollSummary;
   const polls = evidence?.platformPolls || [];
-  if (polls.length > 0 && polls.every((p) => p.lastPollStatus === 'error')) {
+  const allFailed = sum ? (sum.total > 0 && sum.errored === sum.total)
+    : (polls.length > 0 && polls.every((p) => p.lastPollStatus === 'error'));
+  if (allFailed) {
     return { verdict: 'offline', reason: 'Every recent poll of this platform failed', confidence: 'low' };
   }
   return { verdict: 'degraded', reason: 'Alert is open but ICC has no inventory record for this host; treating as degraded', confidence: 'low' };
@@ -893,6 +998,7 @@ function buildMessages(event, evidence, evidenceVerdict, anon) {
     evidence_verdict: evidenceVerdict.verdict,
     evidence_reason: evidenceVerdict.reason,
     platform_polls: evidence.platformPolls,
+    platform_poll_summary: evidence.platformPollSummary,
     sources: evidence.sources,
     host_records: evidence.hostRecords,
     san_paths: evidence.sanPaths,
