@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Fingerprint, Plus, Pencil, Trash2, X, Copy, Check, RefreshCw, ShieldCheck } from 'lucide-react';
 import client from '../api/client';
+import DirectoryTab from './DirectoryTab';
 import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import { copyText } from '../utils/clipboard';
@@ -39,7 +40,7 @@ const SAML_SETUP = [
 
 function blankForm(type) {
   return {
-    name: '', slug: '', type,
+    name: 'Okta', slug: 'okta', type,
     issuer: '', clientId: '', clientSecret: '', clearClientSecret: false,
     scopes: 'openid profile email groups',
     idpEntityId: '', idpSsoUrl: '', idpCertPem: '', idpMetadataUrl: '',
@@ -239,6 +240,7 @@ function ProviderDrawer({ initial, newType, onClose, onChanged }) {
   const isNew = !prov;
   const isOidc = form.type === 'oidc';
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  const setType = (type) => setForm((f) => ({ ...f, type, claimSubject: type === 'saml' ? 'nameid' : 'sub' }));
   const setEv = (k) => (e) => set(k)(e.target.value);
 
   const adopt = (p) => {
@@ -328,9 +330,19 @@ function ProviderDrawer({ initial, newType, onClose, onChanged }) {
   const okta = form.mgmtKind === 'okta';
 
   return (
-    <Drawer title={isNew ? `Add ${isOidc ? 'OIDC' : 'SAML 2.0'} provider` : `Edit ${prov.name}`} onClose={onClose}>
+    <Drawer title={isNew ? 'Add Okta' : `Edit ${prov.name}`} onClose={onClose}>
       <div className="flex flex-col gap-1">
         <SettingGroup title="Connection">
+          <SettingRow label="Protocol" htmlFor="idp-type" tip="How ICC talks to Okta. OpenID Connect is the simpler setup and the recommended choice; pick SAML 2.0 when your Okta app is a SAML app. Fixed after the provider is created.">
+            {isNew ? (
+              <select id="idp-type" value={form.type} onChange={(e) => setType(e.target.value)} className={selectCls}>
+                <option value="oidc">OpenID Connect (recommended)</option>
+                <option value="saml">SAML 2.0</option>
+              </select>
+            ) : (
+              <p className="text-xs text-ink-muted py-1.5">{isOidc ? 'OpenID Connect' : 'SAML 2.0'}</p>
+            )}
+          </SettingRow>
           <SettingRow label="Name" htmlFor="idp-name">
             <input id="idp-name" value={form.name} onChange={setEv('name')} className={inputCls} />
           </SettingRow>
@@ -509,7 +521,6 @@ export default function IdentityProvidersTab() {
   const [providers, setProviders] = useState(null);
   const [error, setError] = useState(null);
   const [drawer, setDrawer] = useState(null); // { initial } | { newType }
-  const [addMenu, setAddMenu] = useState(false);
 
   const load = useCallback(() => {
     setError(null);
@@ -552,27 +563,24 @@ export default function IdentityProvidersTab() {
   if (!providers) return <p className="text-xs text-ink-faint">Loading...</p>;
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-4">
+      <div>
+        <p className="text-sm font-bold text-ink flex items-center gap-2"><Fingerprint size={15} className="text-brand" /> Identity providers</p>
+        <p className="text-[11px] text-ink-muted mt-0.5">Where accounts come from besides local sign-in. Active Directory and Okta can run side by side; access always comes from linked groups.</p>
+      </div>
+
+      <DirectoryTab />
+
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-sm font-bold text-ink flex items-center gap-2"><Fingerprint size={15} className="text-brand" /> Identity providers</p>
-          <p className="text-[11px] text-ink-muted mt-0.5">Single sign-on through OpenID Connect or SAML 2.0, with optional Okta group and user lookup.</p>
+          <p className="text-sm font-bold text-ink">Okta</p>
+          <p className="text-[11px] text-ink-muted mt-0.5">Single sign-on through Okta, with optional Okta group and user lookup for RBAC.</p>
         </div>
-        <div className="relative">
-          <button onClick={() => setAddMenu((o) => !o)} className={btnPrimary}><Plus size={13} /> Add provider</button>
-          {addMenu && (
-            <div className="absolute right-0 mt-1 z-10 w-44 bg-surface-raised border border-cohesity-border rounded-lg shadow-panel overflow-hidden">
-              {[{ t: 'oidc', l: 'OIDC' }, { t: 'saml', l: 'SAML 2.0' }].map((o) => (
-                <button key={o.t} onClick={() => { setAddMenu(false); setDrawer({ newType: o.t }); }}
-                  className="w-full text-left px-3 py-2 text-xs text-ink hover:bg-brand/10 cursor-pointer">{o.l}</button>
-              ))}
-            </div>
-          )}
-        </div>
+        <button onClick={() => setDrawer({ newType: 'oidc' })} className={btnPrimary}><Plus size={13} /> Add Okta</button>
       </div>
 
       {providers.length === 0 && (
-        <div className="panel p-6 text-center text-xs text-ink-faint">No identity providers yet. Local and directory sign-in keep working without one.</div>
+        <div className="panel p-6 text-center text-xs text-ink-faint">No Okta provider yet. Local and Active Directory sign-in keep working without one.</div>
       )}
 
       {providers.map((p) => (
@@ -580,7 +588,8 @@ export default function IdentityProvidersTab() {
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div className="flex items-center gap-2 min-w-0 flex-wrap">
               <p className="text-sm font-bold text-ink">{p.name}</p>
-              <Badge tone="info">{p.type === 'saml' ? 'SAML 2.0' : 'OIDC'}</Badge>
+              <Badge tone="info">Okta</Badge>
+              <span className="text-[10px] text-ink-faint">{p.type === 'saml' ? 'SAML 2.0' : 'OpenID Connect'}</span>
               <span className="text-[11px] text-ink-faint font-mono">{p.slug}</span>
               <TestedState p={p} />
             </div>

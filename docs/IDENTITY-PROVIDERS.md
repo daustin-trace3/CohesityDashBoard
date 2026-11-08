@@ -1,6 +1,6 @@
 # Identity providers
 
-ICC signs users in through OpenID Connect (OIDC) or SAML 2.0, with Okta as the tested target. Providers are per tenant and are managed under Global Settings > Users & Access > Identity providers. Local accounts and Active Directory keep working beside them.
+ICC signs users in through Okta. The UI presents Okta as the provider; underneath, each provider uses OpenID Connect (the recommended protocol) or SAML 2.0, chosen once when the provider is created. Providers are managed under Global Settings > Users & Access > Identity providers, the same tab that holds the Active Directory connection. Local accounts and Active Directory keep working beside them.
 
 ## How access works
 
@@ -23,8 +23,6 @@ The provider drawer shows the URLs to paste into Okta once the provider is saved
 | SAML ACS URL | `<base>/api/auth/sso/<slug>/acs` |
 | SAML SP metadata | `<base>/api/auth/sso/<slug>/metadata` |
 | Start a sign-in | `<base>/api/auth/sso/<slug>/start?returnTo=/` |
-
-On a multi-tenant install the paths read `/api/t/<tenant>/auth/sso/...`.
 
 ## Okta OIDC app
 
@@ -76,7 +74,7 @@ The login page shows these when the server redirects back with `?error=<code>`.
 | sso_unavailable | The identity provider is unreachable. | Network or DNS from ICC to the provider. |
 | sso_replay | That sign-in response was already used. | The same SAML response was submitted twice. |
 
-Each failure is logged as `[sso] <slug> <code>: <detail>` and recorded in the audit log as `login.failed`.
+Each failure is logged as `[sso] <slug> <code>: <detail>` and as `[idp] login.failed provider=<slug> code=<code>`. The icc-phase1 build has no audit log, so provider changes and SSO logins appear in the server log only.
 
 ## Troubleshooting
 

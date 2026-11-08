@@ -1,6 +1,6 @@
 // Just-in-time and synced user provisioning for identity providers (OIDC, SAML,
 // Okta Management API). Mirrors services/directorySync.js: accounts live in
-// the single-tenant users table, and memberships written here carry
+// the local users table, and memberships written here carry
 // source = 'idp' so local and AD rows are never
 // touched. An IdP user is never linked to an existing local or AD account.
 const db = require('../db/database');
@@ -95,7 +95,7 @@ const setIdpMembershipsTxn = db.transaction((userId, providerId, groupIds) => {
 });
 
 /**
- * After a verified sign-in. Returns { user } (tenant users row) or
+ * After a verified sign-in. Returns { user } (users row) or
  * { denied: 'no_access' | 'inactive' | 'jit_disabled' }; a denied identity
  * never creates a row.
  */

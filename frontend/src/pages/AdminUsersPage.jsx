@@ -1,12 +1,11 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Users, UserPlus, Shield, KeyRound, Pencil, Trash2, Plus, X, Copy, Check, Power, ChevronDown, ChevronRight, Building2, Fingerprint } from 'lucide-react';
+import { Users, UserPlus, Shield, KeyRound, Pencil, Trash2, Plus, X, Copy, Check, Power, ChevronDown, ChevronRight, Fingerprint } from 'lucide-react';
 import client from '../api/client';
 import { PageHeader, Badge, LastUpdated } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import { useAuth } from '../auth/AuthContext';
 import { usePlatforms } from '../platforms/PlatformsContext';
 import AdminNav from '../components/AdminNav';
-import DirectoryTab from './DirectoryTab';
 import IdentityProvidersTab from './IdentityProvidersTab';
 import ProviderBadge from '../components/idp/ProviderBadge';
 import { copyText } from '../utils/clipboard';
@@ -18,7 +17,6 @@ const TABS = [
   { key: 'users', label: 'Users', icon: Users },
   { key: 'groups', label: 'Groups', icon: Shield },
   { key: 'service-accounts', label: 'Service Accounts', icon: KeyRound },
-  { key: 'directory', label: 'Directory', icon: Building2 },
   { key: 'identity', label: 'Identity providers', icon: Fingerprint },
 ];
 
@@ -1135,7 +1133,6 @@ export default function AdminUsersPage() {
           {tab === 'users' && <UsersTab />}
           {tab === 'groups' && <GroupsTab />}
           {tab === 'service-accounts' && <ServiceAccountsTab />}
-          {tab === 'directory' && <DirectoryTab />}
           {tab === 'identity' && <IdentityProvidersTab />}
         </div>
       </div>
