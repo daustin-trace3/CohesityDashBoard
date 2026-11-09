@@ -1,10 +1,11 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
-import { Layers, Upload, Trash2, Power, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
+import { Layers, List, Upload, Trash2, Power, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
 import AdminNav from '../components/AdminNav';
 import client from '../api/client';
 import { PageHeader, Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import { useAuth } from '../auth/AuthContext';
+import SettingsTabs, { useSettingsTab } from '../components/settings/SettingsTabs';
 
 function errorMessage(err, fallback) {
   return err?.response?.data?.error || fallback;
@@ -93,6 +94,11 @@ export default function AdminPluginsPage() {
   const fileInputRef = useRef(null);
 
   const canManage = authLoading || hasPermission('admin:plugins:manage');
+  const pluginTabs = [
+    { key: 'installed', label: 'Installed', icon: List },
+    { key: 'install', label: 'Install', icon: Upload, hidden: !canManage },
+  ];
+  const [pluginTab, selectPluginTab] = useSettingsTab(pluginTabs, 'installed');
 
   const load = useCallback(() => {
     setError(null);
@@ -190,7 +196,9 @@ export default function AdminPluginsPage() {
 
       {error && <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2">{error}</p>}
 
-      {canManage && (
+      <SettingsTabs tabs={pluginTabs} active={pluginTab} onChange={selectPluginTab} label="Platform settings" />
+
+      {canManage && pluginTab === 'install' && (
         <div
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
@@ -219,7 +227,7 @@ export default function AdminPluginsPage() {
         </div>
       )}
 
-      {!plugins ? (
+      {pluginTab === 'installed' && (!plugins ? (
         <p className="text-xs text-ink-faint">Loading…</p>
       ) : (
         <div className="panel p-0 overflow-hidden">
@@ -313,7 +321,7 @@ export default function AdminPluginsPage() {
             </tbody>
           </table>
         </div>
-      )}
+      ))}
 
       {uninstallTarget && (
         <UninstallModal

@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useParams, useSearchParams, Link, Navigate } from 'react-router-dom';
-import { Save, Layers, KeyRound, Settings, Mail } from 'lucide-react';
+import { Layers, KeyRound, Settings, Mail, SlidersHorizontal, Database, Gauge, Server, Filter, FileKey } from 'lucide-react';
 import client from '../api/client';
 import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import AdminNav from '../components/AdminNav';
-import { SettingRow, SettingGroup, numberCls } from '../components/settings/SettingRow';
+import { SettingRow, SettingGroup, TabSaveBar, numberCls } from '../components/settings/SettingRow';
+import SettingsTabs, { useSettingsTab } from '../components/settings/SettingsTabs';
 import { RetentionGlobalGroup } from '../components/settings/RetentionControls';
 import IntelligenceSettingsPage from './IntelligenceSettingsPage';
 import { SWITCHER_MODES, getSwitcherMode } from '../components/PlatformSwitcher';
@@ -54,11 +55,15 @@ export default function AdminSettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const { toast } = useToast();
+  // Snapshots of what the server holds, so each tab saves and flags only its own fields.
+  const [savedF, setSavedF] = useState(null);
+  const [savingTab, setSavingTab] = useState(null);
 
   const [notify, setNotify] = useState(null);
   const [notifyLoading, setNotifyLoading] = useState(false);
   const [notifyPassword, setNotifyPassword] = useState('');
   const [notifyPasswordCleared, setNotifyPasswordCleared] = useState(false);
+  const [savedNotify, setSavedNotify] = useState(null);
   const [savingNotify, setSavingNotify] = useState(false);
   const [testingNotify, setTestingNotify] = useState(false);
 
@@ -76,21 +81,44 @@ export default function AdminSettingsPage() {
         setCohesityRunRetentionDays(d.cohesityRunRetentionDays ?? 0);
         setNetbackupJobHistoryDays(d.netbackupJobHistoryDays ?? 30);
         setPollerCallsInFlight(d.pollerCallsInFlight ?? 4);
+        setSavedF({
+          opsOverviewStyle: d.opsOverviewStyle || 'classic', dnsServer: d.dnsServer || '',
+          cohesityRunHistoryDays: d.cohesityRunHistoryDays ?? 90, cohesityRunRetentionDays: d.cohesityRunRetentionDays ?? 0,
+          netbackupJobHistoryDays: d.netbackupJobHistoryDays ?? 30,
+          pollerCallsInFlight: d.pollerCallsInFlight ?? 4,
+        });
       }
     }).finally(() => setLoading(false));
   }, []);
 
-  // Features tab only: the Intelligence tabs save their own fields.
-  const save = async () => {
-    setSaving(true);
+  // Features tabs: each tab saves only its own keys.
+  const featValues = {
+    opsOverviewStyle, dnsServer, cohesityRunHistoryDays, cohesityRunRetentionDays,
+    netbackupJobHistoryDays, pollerCallsInFlight,
+  };
+  const FEAT_TAB_FIELDS = {
+    preferences: ['opsOverviewStyle', 'dnsServer'],
+    fetch: ['cohesityRunHistoryDays', 'cohesityRunRetentionDays', 'netbackupJobHistoryDays', 'pollerCallsInFlight'],
+  };
+  const featDirty = (t) => !!savedF && (FEAT_TAB_FIELDS[t] || []).some(k => String(featValues[k]) !== String(savedF[k]));
+  const featPayload = {
+    opsOverviewStyle: () => opsOverviewStyle,
+    dnsServer: () => dnsServer,
+    cohesityRunHistoryDays: () => Math.min(365, Math.max(30, Number(cohesityRunHistoryDays) || 90)),
+    cohesityRunRetentionDays: () => ((Number(cohesityRunRetentionDays) || 0) === 0 ? 0 : Math.min(3650, Math.max(30, Number(cohesityRunRetentionDays)))),
+    netbackupJobHistoryDays: () => Math.min(365, Math.max(7, Number(netbackupJobHistoryDays) || 30)),
+    pollerCallsInFlight: () => Math.min(16, Math.max(1, Number(pollerCallsInFlight) || 4)),
+  };
+  const saveFeatTab = async (t) => {
+    setSavingTab(t);
     try {
-      await client.put('/settings', {
-        opsOverviewStyle,
-        dnsServer,
-        cohesityRunHistoryDays: Math.min(365, Math.max(30, Number(cohesityRunHistoryDays) || 90)),
-        cohesityRunRetentionDays: (Number(cohesityRunRetentionDays) || 0) === 0 ? 0 : Math.min(3650, Math.max(30, Number(cohesityRunRetentionDays))),
-        netbackupJobHistoryDays: Math.min(365, Math.max(7, Number(netbackupJobHistoryDays) || 30)),
-        pollerCallsInFlight: Math.min(16, Math.max(1, Number(pollerCallsInFlight) || 4)),
+      const payload = {};
+      FEAT_TAB_FIELDS[t].forEach(k => { payload[k] = featPayload[k](); });
+      await client.put('/settings', payload);
+      setSavedF(f => {
+        const next = { ...(f || {}) };
+        FEAT_TAB_FIELDS[t].forEach(k => { next[k] = featValues[k]; });
+        return next;
       });
       window.dispatchEvent(new Event('platforms-changed'));
       window.dispatchEvent(new Event('ops-style-changed'));
@@ -98,7 +126,7 @@ export default function AdminSettingsPage() {
     } catch (e) {
       toast({ type: 'error', title: 'Save failed', message: e?.response?.data?.error || 'Could not save settings. Try again.' });
     } finally {
-      setSaving(false);
+      setSavingTab(null);
     }
   };
 
@@ -126,34 +154,44 @@ export default function AdminSettingsPage() {
     if (tab !== 'notifications' || notify) return;
     setNotifyLoading(true);
     client.get('/settings/notifications')
-      .then(({ data }) => setNotify(data))
+      .then(({ data }) => { setNotify(data); setSavedNotify(data); })
       .catch(() => toast({ type: 'error', title: 'Could not load', message: 'Could not load notification settings.' }))
       .finally(() => setNotifyLoading(false));
   }, [tab, notify, toast]);
 
-  const saveNotify = async () => {
+  const NOTIFY_TAB_FIELDS = {
+    relay: ['smtpEnabled', 'smtpHost', 'smtpPort', 'smtpEncryption', 'smtpAuthMethod', 'smtpUsername', 'smtpFrom'],
+    filtering: ['smtpRecipients', 'alertMinSeverity', 'alertPlatforms', 'reminderHours'],
+  };
+  const notifyDirty = (t) => {
+    if (!notify || !savedNotify) return false;
+    const fields = (NOTIFY_TAB_FIELDS[t] || []).some(k => JSON.stringify(notify[k]) !== JSON.stringify(savedNotify[k]));
+    return fields || (t === 'relay' && (!!notifyPassword || notifyPasswordCleared));
+  };
+  const saveNotifyTab = async (t) => {
     if (!notify) return;
     setSavingNotify(true);
     try {
-      const payload = {
-        smtpEnabled: notify.smtpEnabled,
-        smtpHost: notify.smtpHost,
-        smtpPort: Number(notify.smtpPort) || 587,
-        smtpEncryption: notify.smtpEncryption,
-        smtpAuthMethod: notify.smtpAuthMethod,
-        smtpUsername: notify.smtpUsername,
-        smtpFrom: notify.smtpFrom,
-        smtpRecipients: notify.smtpRecipients,
-        alertMinSeverity: notify.alertMinSeverity,
-        alertPlatforms: notify.alertPlatforms,
-        reminderHours: Number(notify.reminderHours) || 0,
-      };
-      if (notifyPassword) payload.smtpPassword = notifyPassword;
-      else if (notifyPasswordCleared) payload.smtpPassword = '';
+      const payload = {};
+      NOTIFY_TAB_FIELDS[t].forEach(k => { payload[k] = notify[k]; });
+      if (t === 'relay') {
+        payload.smtpPort = Number(notify.smtpPort) || 587;
+        if (notifyPassword) payload.smtpPassword = notifyPassword;
+        else if (notifyPasswordCleared) payload.smtpPassword = '';
+      } else {
+        payload.reminderHours = Number(notify.reminderHours) || 0;
+      }
       const { data } = await client.put('/settings/notifications', payload);
-      setNotify(data);
-      setNotifyPassword('');
-      setNotifyPasswordCleared(false);
+      // Take the server values for this tab's fields; the other tab's unsaved edits stay.
+      const merge = (cur) => {
+        const next = { ...(cur || data) };
+        NOTIFY_TAB_FIELDS[t].forEach(k => { next[k] = data[k]; });
+        next.smtpPasswordSet = data.smtpPasswordSet;
+        return next;
+      };
+      setNotify(merge);
+      setSavedNotify(merge);
+      if (t === 'relay') { setNotifyPassword(''); setNotifyPasswordCleared(false); }
       toast({ type: 'success', title: 'Settings saved', message: 'Alert notification settings updated.' });
     } catch (err) {
       toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error || 'Could not save notification settings. Try again.' });
@@ -174,7 +212,26 @@ export default function AdminSettingsPage() {
     }
   };
 
+  const pageTabs = {
+    platforms: [
+      { key: 'preferences', label: 'Preferences', icon: SlidersHorizontal, dirty: featDirty('preferences') },
+      { key: 'retention', label: 'Data retention', icon: Database },
+      { key: 'fetch', label: 'Fetch depth and limits', icon: Gauge, dirty: featDirty('fetch') },
+    ],
+    license: [
+      { key: 'status', label: 'License', icon: KeyRound },
+      { key: 'update', label: 'Update key', icon: FileKey, dirty: !!licenseKeyInput.trim() },
+    ],
+    notifications: [
+      { key: 'relay', label: 'Email relay', icon: Server, dirty: notifyDirty('relay') },
+      { key: 'filtering', label: 'Recipients and filtering', icon: Filter, dirty: notifyDirty('filtering') },
+    ],
+  }[tab] || [];
+  const [pageTab, selectPageTab] = useSettingsTab(pageTabs, pageTabs[0]?.key);
+
   if (intelAlias) return <Navigate to={`/admin/intelligence?tab=${encodeURIComponent(intelAlias)}`} replace />;
+
+  const loadingP = <p className="text-gray-400 text-sm">Loading...</p>;
 
   return (
     <div className="flex flex-col gap-4">
@@ -184,7 +241,7 @@ export default function AdminSettingsPage() {
         </div>
         <div>
           <h1 className="text-lg font-bold text-ink">Global Settings</h1>
-          <p className="text-xs text-ink-muted mt-0.5">Estate-wide administration — AI, platforms, and product licensing. Platform-specific credentials live on each platform's own Settings page.</p>
+          <p className="text-xs text-ink-muted mt-0.5">Estate-wide administration - AI, platforms, and product licensing. Platform-specific credentials live on each platform's own Settings page.</p>
         </div>
       </div>
 
@@ -194,27 +251,20 @@ export default function AdminSettingsPage() {
 
       {tab === 'intelligence' && <IntelligenceSettingsPage />}
 
+      {tab !== 'intelligence' && (
+        <SettingsTabs tabs={pageTabs} active={pageTab} onChange={selectPageTab}
+          label={tab === 'platforms' ? 'Feature settings' : tab === 'license' ? 'License settings' : 'Alert notification settings'} />
+      )}
 
-      {/* Features & preferences (platform enable/disable lives on the merged Platforms page) */}
-      {tab === 'platforms' && (
-      <div className="panel p-4">
-        <div className="flex items-center gap-2 mb-1">
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
-            <Layers size={14} className="text-brand" />
-          </div>
-          <div>
-            <p className="text-sm font-bold text-ink">Features & Preferences</p>
-            <p className="text-[11px] text-ink-muted">
-              Switcher style, and estate-wide preferences. Platform on/off toggles moved to the{' '}
-              <Link to="/admin/plugins" className="text-brand hover:text-brand-bright">Platforms</Link> page.
-            </p>
-          </div>
-        </div>
-
-        {loading ? (
-          <p className="text-gray-400 text-sm mt-4">Loading…</p>
-        ) : (
-          <div className="flex flex-col gap-3 mt-4">
+      {/* Features: platform enable/disable lives on the merged Platforms page */}
+      {tab === 'platforms' && pageTab === 'preferences' && (
+        <div className="panel p-4">
+          <p className="text-[11px] text-ink-muted">
+            Switcher style and estate-wide preferences. Platform on/off toggles are on the{' '}
+            <Link to="/admin/plugins" className="text-brand hover:text-brand-bright">Platforms</Link> page.
+          </p>
+          {loading ? loadingP : (
+            <div className="flex flex-col gap-3 mt-2">
             <div className="pt-2 border-t border-cohesity-border/60">
               <p className="text-xs font-semibold text-ink mb-1 mt-2">Ops Monitor default view</p>
               <p className="text-[11px] text-ink-muted mb-2 leading-relaxed">
@@ -260,19 +310,29 @@ export default function AdminSettingsPage() {
             <div className="pt-2 border-t border-cohesity-border/60">
               <label htmlFor="dns-server" className="block text-xs font-semibold text-ink mb-1 mt-2">DNS resolver <span className="text-ink-faint font-normal">(optional)</span></label>
               <p className="text-[11px] text-ink-muted mb-2 leading-relaxed">
-                DNS server IP (or hostname) used to reverse-resolve IP addresses to names across the dashboard — e.g. NFS client IPs. Leave blank to disable hostname lookups.
+                DNS server IP (or hostname) used to reverse-resolve IP addresses to names across the dashboard - e.g. NFS client IPs. Leave blank to disable hostname lookups.
               </p>
               <input id="dns-server" type="text" value={dnsServer} onChange={e => setDnsServer(e.target.value)}
                 placeholder="e.g. 172.17.0.10"
                 className="w-full max-w-xs bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none tnum" />
             </div>
 
-
-            <div className="pt-2 border-t border-cohesity-border/60">
-              <RetentionGlobalGroup />
+              <TabSaveBar onSave={() => saveFeatTab('preferences')} saving={savingTab === 'preferences'} dirty={featDirty('preferences')} />
             </div>
+          )}
+        </div>
+      )}
 
-            <div className="pt-2 border-t border-cohesity-border/60">
+      {tab === 'platforms' && pageTab === 'retention' && (
+        <div className="panel p-4">
+          <RetentionGlobalGroup />
+        </div>
+      )}
+
+      {tab === 'platforms' && pageTab === 'fetch' && (
+        <div className="panel p-4">
+          {loading ? loadingP : (
+            <div className="flex flex-col gap-3">
               <SettingGroup title="Fetch depth and ledgers">
                 <p className="text-[11px] text-ink-muted pt-2 leading-relaxed">How far back ICC asks each platform for job history, and ledgers that keep rows past the retention buckets.</p>
             <div className="pt-2 border-t border-cohesity-border/60">
@@ -302,8 +362,6 @@ export default function AdminSettingsPage() {
               </SettingRow>
             </div>
               </SettingGroup>
-            </div>
-
             <div className="pt-2 border-t border-cohesity-border/60">
               <SettingRow label="Calls in flight per platform" htmlFor="poller-calls-in-flight"
                 tip="How many API calls a poller keeps open at once inside one tick. Raise it on a fast vendor API, lower it if the vendor rate-limits or the database reports lock contention.">
@@ -313,27 +371,19 @@ export default function AdminSettingsPage() {
               </SettingRow>
             </div>
 
-            <div className="flex items-center gap-2 pt-1">
-              <button
-                onClick={save}
-                disabled={saving}
-                className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-50 cursor-pointer"
-              >
-                <Save size={13} /> {saving ? 'Saving…' : 'Save settings'}
-              </button>
+              <TabSaveBar onSave={() => saveFeatTab('fetch')} saving={savingTab === 'fetch'} dirty={featDirty('fetch')} />
             </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
       )}
 
-      {/* Product license — status only, key is never displayed */}
-      {tab === 'license' && !license && (
+      {/* Product license: status only, the key is never displayed */}
+      {tab === 'license' && pageTab === 'status' && !license && (
         <div className="panel p-4">
           <p className="text-xs text-ink-faint">License status is unavailable right now.</p>
         </div>
       )}
-      {tab === 'license' && license && (
+      {tab === 'license' && pageTab === 'status' && license && (
         <div className="panel p-4">
           <div className="flex items-center gap-2 mb-3">
             <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
@@ -353,15 +403,15 @@ export default function AdminSettingsPage() {
             )}
             {license.effectiveExpiry && (
               <span className="text-xs text-ink-muted">Expires <span className="text-ink font-semibold tnum">{license.effectiveExpiry}</span>
-                {license.state === 'valid' && license.daysLeft != null && <span className="text-ink-faint"> · {license.daysLeft} days left</span>}
-                {license.state === 'grace' && license.graceDaysLeft != null && <span className="text-status-crit font-semibold"> · locks in {license.graceDaysLeft} day{license.graceDaysLeft === 1 ? '' : 's'}</span>}
+                {license.state === 'valid' && license.daysLeft != null && <span className="text-ink-faint"> - {license.daysLeft} days left</span>}
+                {license.state === 'grace' && license.graceDaysLeft != null && <span className="text-status-crit font-semibold"> - locks in {license.graceDaysLeft} day{license.graceDaysLeft === 1 ? '' : 's'}</span>}
               </span>
             )}
           </div>
         </div>
       )}
 
-      {tab === 'license' && (
+      {tab === 'license' && pageTab === 'update' && (
         <div className="panel p-4 mt-4">
           <div className="flex items-center gap-2 mb-1">
             <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
@@ -369,14 +419,14 @@ export default function AdminSettingsPage() {
             </div>
             <div>
               <p className="text-sm font-bold text-ink">Update license key</p>
-              <p className="text-[11px] text-ink-muted">Paste a new product license key (starts with <code>CDBL-</code>) to replace the current one — e.g. a multi-year renewal.</p>
+              <p className="text-[11px] text-ink-muted">Paste a new product license key (starts with <code>CDBL-</code>) to replace the current one - e.g. a multi-year renewal.</p>
             </div>
           </div>
           <textarea
             value={licenseKeyInput}
             onChange={(e) => setLicenseKeyInput(e.target.value)}
             rows={3}
-            placeholder="CDBL-…"
+            placeholder="CDBL-..."
             spellCheck={false}
             className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-[11px] font-mono text-ink focus:border-brand/60 outline-none mt-3"
           />
@@ -386,31 +436,19 @@ export default function AdminSettingsPage() {
               disabled={activating || !licenseKeyInput.trim()}
               className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-50 cursor-pointer"
             >
-              <KeyRound size={13} /> {activating ? 'Applying…' : 'Apply license key'}
+              <KeyRound size={13} /> {activating ? 'Applying...' : 'Apply license key'}
             </button>
           </div>
         </div>
       )}
 
-      {/* Alert Notifications */}
-
-      {tab === 'notifications' && (
-      <>
-      <div className="panel p-4">
-        <div className="flex items-center gap-2 mb-1">
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
-            <Mail size={14} className="text-brand" />
-          </div>
-          <div>
-            <p className="text-sm font-bold text-ink">SMTP Server</p>
-            <p className="text-[11px] text-ink-muted">Email delivery settings used to send alert notifications.</p>
-          </div>
-        </div>
-
-        {notifyLoading || !notify ? (
-          <p className="text-gray-400 text-sm mt-4">Loading…</p>
-        ) : (
-          <div className="flex flex-col gap-4 mt-4">
+      {tab === 'notifications' && pageTab === 'relay' && (
+        <div className="panel p-4">
+          <p className="text-[11px] text-ink-muted">Email delivery settings used to send alert notifications.</p>
+          {notifyLoading || !notify ? (
+            <p className="text-gray-400 text-sm mt-4">Loading...</p>
+          ) : (
+            <div className="flex flex-col gap-4 mt-4">
             <label className="flex items-start gap-2.5 cursor-pointer select-none">
               <input
                 type="checkbox"
@@ -502,14 +540,14 @@ export default function AdminSettingsPage() {
                     autoComplete="off"
                     value={notifyPassword}
                     onChange={e => { setNotifyPassword(e.target.value); setNotifyPasswordCleared(false); }}
-                    placeholder={notify.smtpPasswordSet && !notifyPasswordCleared ? 'unchanged — leave blank to keep' : ''}
+                    placeholder={notify.smtpPasswordSet && !notifyPasswordCleared ? 'unchanged - leave blank to keep' : ''}
                     className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs font-mono text-ink focus:border-brand/60 outline-none"
                   />
                 </div>
               </div>
             )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label htmlFor="smtp-from" className="block text-xs font-semibold text-ink mb-1">From address</label>
                 <input
@@ -520,6 +558,28 @@ export default function AdminSettingsPage() {
                   className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none"
                 />
               </div>
+              </div>
+              <TabSaveBar onSave={() => saveNotifyTab('relay')} saving={savingNotify} dirty={notifyDirty('relay')}>
+            <button
+              onClick={sendTestNotify}
+              disabled={testingNotify}
+              className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-surface-overlay border border-cohesity-border text-ink rounded-lg hover:bg-surface transition-colors disabled:opacity-50 cursor-pointer"
+            >
+              <Mail size={13} /> {testingNotify ? 'Sending...' : 'Send test email'}
+            </button>
+              </TabSaveBar>
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === 'notifications' && pageTab === 'filtering' && (
+        <div className="panel p-4">
+          <p className="text-[11px] text-ink-muted">Who receives alert emails and which alerts trigger one.</p>
+          {notifyLoading || !notify ? (
+            <p className="text-gray-400 text-sm mt-4">Loading...</p>
+          ) : (
+            <div className="flex flex-col gap-4 mt-4">
               <div>
                 <label htmlFor="smtp-recipients" className="block text-xs font-semibold text-ink mb-1">Default recipients</label>
                 <p className="text-[11px] text-ink-muted mb-1.5 leading-relaxed">
@@ -534,24 +594,6 @@ export default function AdminSettingsPage() {
                   className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none"
                 />
               </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {!notifyLoading && notify && (
-      <div className="panel p-4">
-        <div className="flex items-center gap-2 mb-1">
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
-            <Mail size={14} className="text-brand" />
-          </div>
-          <div>
-            <p className="text-sm font-bold text-ink">Alert Filtering</p>
-            <p className="text-[11px] text-ink-muted">Which alerts trigger an email.</p>
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-4 mt-4">
           <div>
             <label htmlFor="alert-min-severity" className="block text-xs font-semibold text-ink mb-1">Default minimum severity</label>
             <p className="text-[11px] text-ink-muted mb-1.5 leading-relaxed">
@@ -592,7 +634,7 @@ export default function AdminSettingsPage() {
 
           <div>
             <label htmlFor="reminder-hours" className="block text-xs font-semibold text-ink mb-1">Reminder interval (hours)</label>
-            <p className="text-[11px] text-ink-muted mb-1.5 leading-relaxed">Unresolved alerts re-notify at this interval — 0 disables reminders</p>
+            <p className="text-[11px] text-ink-muted mb-1.5 leading-relaxed">Unresolved alerts re-notify at this interval - 0 disables reminders</p>
             <input
               id="reminder-hours"
               type="number" min="0" max="168" step="1"
@@ -602,26 +644,10 @@ export default function AdminSettingsPage() {
             />
           </div>
 
-          <div className="flex items-center gap-2 pt-1">
-            <button
-              onClick={sendTestNotify}
-              disabled={testingNotify}
-              className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-surface-overlay border border-cohesity-border text-ink rounded-lg hover:bg-surface transition-colors disabled:opacity-50 cursor-pointer"
-            >
-              <Mail size={13} /> {testingNotify ? 'Sending…' : 'Send test email'}
-            </button>
-            <button
-              onClick={saveNotify}
-              disabled={savingNotify}
-              className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-50 cursor-pointer"
-            >
-              <Save size={13} /> {savingNotify ? 'Saving…' : 'Save settings'}
-            </button>
-          </div>
+              <TabSaveBar onSave={() => saveNotifyTab('filtering')} saving={savingNotify} dirty={notifyDirty('filtering')} />
+            </div>
+          )}
         </div>
-      </div>
-      )}
-      </>
       )}
         </div>
       </div>

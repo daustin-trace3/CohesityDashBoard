@@ -9,6 +9,7 @@ import PrivacyInspectorPage from '../components/PrivacyInspectorPage';
 import AgentCapabilitiesPanel from '../components/AgentCapabilitiesPanel';
 import AgentProfilesPanel from '../components/AgentProfilesPanel';
 import TeamsNotifyPanel from '../components/settings/TeamsNotifyPanel';
+import SettingsTabs from '../components/settings/SettingsTabs';
 import {
   SettingRow, SettingGroup, Toggle, TabSaveBar, inputCls, numberCls, selectCls,
 } from '../components/settings/SettingRow';
@@ -766,22 +767,8 @@ export default function IntelligenceSettingsPage({ defaultTab = 'provider' }) {
 
   return (
     <div className="flex flex-col gap-4">
-      <div role="tablist" aria-label="Intelligence settings" className="flex items-end gap-1 overflow-x-auto border-b border-cohesity-border">
-        {visibleTabs.map(t => {
-          const Icon = t.icon;
-          const active = t.key === tab;
-          return (
-            <button key={t.key} role="tab" aria-selected={active} onClick={() => selectTab(t.key)}
-              className={`flex items-center gap-1.5 whitespace-nowrap px-3 py-2 -mb-px text-xs font-medium border-b-2 transition-colors cursor-pointer ${
-                active ? 'border-brand text-ink' : 'border-transparent text-ink-muted hover:text-ink'}`}
-              style={{ borderTop: 'none', borderLeft: 'none', borderRight: 'none', background: 'none' }}>
-              <Icon size={13} className={active ? 'text-brand' : 'text-ink-faint'} />
-              {t.label}
-              {tabDirty(t.key) && <span className="h-1.5 w-1.5 rounded-full bg-amber-400" title="Unsaved changes" />}
-            </button>
-          );
-        })}
-      </div>
+      <SettingsTabs label="Intelligence settings" active={tab} onChange={selectTab}
+        tabs={visibleTabs.map(t => ({ key: t.key, label: t.label, icon: t.icon, dirty: tabDirty(t.key) }))} />
       <div role="tabpanel" className="flex flex-col gap-4">{renderTab()}</div>
     </div>
   );

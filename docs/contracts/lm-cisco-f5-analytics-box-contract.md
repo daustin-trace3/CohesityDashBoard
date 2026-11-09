@@ -34,7 +34,7 @@ No new LM API calls are needed for any work package here, except the optional co
 | G6 | **Uneven sampling.** The metrics tier is capped at 300 data calls per run (`lm_metrics_data_calls_per_tick`), with about 2,250 candidates on the live portal. A given device can be hours stale. Trend and forecast code must weight by sample count and timestamp, never by row index. It must show "insufficient data" instead of extrapolating from fewer than N points (default N = 7 daily points for a forecast). |
 | G7 | **Demo and test parity.** Every new table or feed gets demo data in `backend/demo/generators/logicmonitor.js`, is added to the `seedDemo` table lists (`backend/demo/seedDemo.js` and the `TABLES` arrays in the LM tests), and has a vitest suite under `backend/tests/`. Known pre-existing unrelated failures: seedDemo (zerto, vcenter, LM r3/r8 time-dependent), agentCapabilities tls, aws/platform plugin suites. |
 | G8 | **Frontend reuse.** Cisco already reuses LM pages through `apiBase="/cisco"` (`frontend/src/pages/cisco/CiscoReusedPages.jsx`). Prefer the same pattern: extend an LM page and make it apiBase-aware rather than forking it. Reuse `TrendLine`, `AutoTable`, `pointsOf` from `frontend/src/pages/logicmonitor/LmFirewall360.jsx`, plus `StatCard`, `SectionPanel`, `SortTh`. |
-| G9 | **Wording.** A forecast is labelled as an estimate and shows its basis, e.g. "linear fit over 28 days, R² 0.82". No fabricated precision. |
+| G9 | **Wording.** A forecast is labelled as an estimate and shows its basis, e.g. "linear fit over 28 days, R2 0.82". No fabricated precision. |
 | G10 | **Security.** Bind all SQL parameters and compute epochs in JS, as the existing code does. Validate every route param with `express-validator`. Routes inherit the existing auth and permission middleware. Do not add unauthenticated endpoints. |
 
 ---
@@ -174,7 +174,7 @@ Run the queries in section 6 for PoE, optics, BGP prefixes, filesystem bytes and
 - **Rows:** PSU, fan, temperature, entity sensors, Nexus line card and supervisor, stack member and stack port. One row per component, worst first.
 - **Derived:**
   - **Redundancy lost.** The device is up but has only one PSU OK, one supervisor, a stack ring open (any stack_port_state down), or a stack member missing.
-  - **Thermal outliers.** temp_c > fleet median for the same `model` + 2×MAD, or above the site median + 2×MAD. When several devices at one site are hot, label it "site HVAC suspected", not "device fault".
+  - **Thermal outliers.** temp_c > fleet median for the same `model` + 2xMAD, or above the site median + 2xMAD. When several devices at one site are hot, label it "site HVAC suspected", not "device fault".
   - **Thermal trend.** 30-day `max` slope per sensor from `lm_ds_daily` (WP-X1).
   - **Switchover history.** `stateChanges` on stack_role, sup_state and sup1/sup2_state over 90 days.
 - **Tiles:** components failed, devices with lost redundancy, hot sensors, switchovers (30 d).
@@ -184,7 +184,7 @@ Run the queries in section 6 for PoE, optics, BGP prefixes, filesystem bytes and
 - Reuse `LmInterfacesPage.jsx` with `apiBase="/cisco"`, filtered to Cisco devices. Add tabs:
   - **Hot.** Top N by p95/max util over 7 days. Forecast days to 80% from `lm_interface_daily.max_in_util_pct` / out (WP-X1).
   - **Flapping.** Top N by `flaps` and `down_samples` over 7 and 30 days.
-  - **Errors.** errors_sum and discards, plus deviation from `lm_interface_baseline` (current error rate > median + 3×MAD for that hour).
+  - **Errors.** errors_sum and discards, plus deviation from `lm_interface_baseline` (current error rate > median + 3xMAD for that hour).
 - Drill-down reuses `LmInterfaceHistoryModal.jsx` and `LmInterfaceCompareModal.jsx`.
 
 ### WP-C3: Optics (`/cisco/optics`), depends on C0
@@ -196,7 +196,7 @@ Run the queries in section 6 for PoE, optics, BGP prefixes, filesystem bytes and
 - The sensor kind is in the instance name for the generic sensor-table form. Parse "Rx Power", "Tx Power", "Temperature", "Bias" and "Voltage" from the instance name, and document the parser with live examples.
 
 ### WP-C4: PoE budget (`/cisco/poe` or a section on Hardware), depends on C0
-- **Rows:** per switch or stack member, with poe_used_watts, poe_used_pct, budget (= watts / pct × 100 when both are present) and headroom in watts.
+- **Rows:** per switch or stack member, with poe_used_watts, poe_used_pct, budget (= watts / pct x 100 when both are present) and headroom in watts.
 - **Derived:**
   - 30-day trend.
   - Days until 90% of budget.
@@ -206,13 +206,13 @@ Run the queries in section 6 for PoE, optics, BGP prefixes, filesystem bytes and
 - **Rows:** BGP, OSPF and EIGRP peers per device, with state, established time / uptime and prefixes in.
 - **Derived:**
   - Peer flaps over 7 and 30 days, via `resetEvents` on bgp_established_s / eigrp_uptime_s, plus `stateChanges` on the state metrics.
-  - Prefix-count drift: today vs the 7-day median, flagged when ±20%.
+  - Prefix-count drift: today vs the 7-day median, flagged when +-20%.
   - Peers not established.
 - **Rule:** a peer that is down while its device is dead is shadowed (follow the existing `isShadowedIssue` convention), not double-counted.
 
 ### WP-C6: Device resources (section on the device drill-down, plus a fleet table)
 - cpu_pct and mem_pct trends over 30 to 90 days (daily max and avg).
-- **Memory creep:** positive mem_pct slope with R² > 0.7 over at least 14 days and no reboot in the window. Label it "possible leak, review IOS-XE version". Cross-reference WP-X4 version spread.
+- **Memory creep:** positive mem_pct slope with R2 > 0.7 over at least 14 days and no reboot in the window. Label it "possible leak, review IOS-XE version". Cross-reference WP-X4 version spread.
 - **Flash:** fs_used_pct slope plus `daysUntil(95)`.
 - Reuse `cpuMemBaseline` / `topCpuBaselines`.
 
@@ -261,8 +261,8 @@ New nav items in `frontend/src/platforms/f5/index.jsx` under Inventory / a new *
 ### WP-F2: Capacity and trends (`/f5/trends`, plus longer trends on `LmLoadBalancer360`)
 - On the 360, extend the existing 24 h CPU / connections charts with a 7 / 30 / 90 day selector. Use `lm_ds_metrics_history` for 7 d or less and `lm_ds_daily` beyond that.
 - **Fleet table:** per unit, CPU p95, memory p95, peak client connections, 30-day slope, and days until 80% CPU (WP-X1).
-- **Peak-hour profile.** Hour-of-day × day-of-week heatmap of client connections from `lm_ds_metrics_history` (14 d window). Opt in `loadbalancer` metrics in `logicmonitorMetricBaselines.js` (`client_connections`, `cpu_pct`) to get median / MAD per hour and **drift** against the 7-day-ago reference, like the IP SLA reference rows.
-- **Connection anomaly.** Client connections more than 3×MAD away from the hour baseline. Flag a sudden drop (an app outage upstream) as well as a spike.
+- **Peak-hour profile.** Hour-of-day x day-of-week heatmap of client connections from `lm_ds_metrics_history` (14 d window). Opt in `loadbalancer` metrics in `logicmonitorMetricBaselines.js` (`client_connections`, `cpu_pct`) to get median / MAD per hour and **drift** against the 7-day-ago reference, like the IP SLA reference rows.
+- **Connection anomaly.** Client connections more than 3xMAD away from the hour baseline. Flag a sudden drop (an app outage upstream) as well as a spike.
 - **Client:server connection ratio** per unit, trended. A sudden change suggests a OneConnect / profile change or a backend problem. Show it as info.
 - **Memory pressure.** swap used = swap_total - swap_avail. Any sustained swap use on BIG-IP is a warning. Trend mem_avail_bytes.
 - **Filesystem.** fs_used_pct and fs_inode_pct, with slope and `daysUntil(90)` (typically /var/log or /shared).
@@ -276,7 +276,7 @@ New nav items in `frontend/src/platforms/f5/index.jsx` under Inventory / a new *
 ### WP-F4: Certificate timeline (`/f5/certificates`)
 - Every VIP certificate across the fleet, with device, VIP / profile (from the instance name) and days left.
 - Buckets: expired, <7, <30, <60, <90, >90 days. Add a calendar-style list grouped by week of expiry.
-- **Dedupe.** The same certificate on both HA units, or on several VIPs, is counted once in the headline. The key is the instance name stem plus days_left ±1.
+- **Dedupe.** The same certificate on both HA units, or on several VIPs, is counted once in the headline. The key is the instance name stem plus days_left +-1.
 - Remove the `CERT_DETAIL_CAP = 40` per-device detail loop in `buildOverview` (`backend/platforms/f5/index.js`) by adding a `certificates` feed that answers from `lm_ds_metrics` in one query. This also speeds up the overview.
 
 ### WP-F5: GTM / DNS analytics (section, gated on vendor_kind `gtm`)
@@ -288,7 +288,7 @@ New nav items in `frontend/src/platforms/f5/index.jsx` under Inventory / a new *
 ### WP-F6: Daemon and hardware stability
 - **Daemon flaps.** `stateChanges` on daemon_exit per daemon over 30 days. Any non-zero day is shown as an event.
 - **Hardware:** fan / PSU / temperature, as in Cisco WP-C1 (redundancy lost, thermal outliers by model). Reuse the C1 code and parametrise it by vendor.
-- **Interfaces:** errors and drops per second, trended from `lm_ds_daily`. Top N interfaces by drops. Throughput (if_in/out_bytes × 8) daily max trend.
+- **Interfaces:** errors and drops per second, trended from `lm_ds_daily`. Top N interfaces by drops. Throughput (if_in/out_bytes x 8) daily max trend.
 
 ### WP-F7: F5 Overview tiles and Advisor
 - **Overview tiles:** HA pairs at risk (both active / neither active / no headroom), certificates expiring in 30 d (deduped), units forecast to 80% CPU within 30 d, pools with a single point of failure, daemon flaps (7 d).

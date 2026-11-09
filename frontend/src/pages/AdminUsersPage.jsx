@@ -9,6 +9,7 @@ import AdminNav from '../components/AdminNav';
 import IdentityProvidersTab from './IdentityProvidersTab';
 import ProviderBadge from '../components/idp/ProviderBadge';
 import { copyText } from '../utils/clipboard';
+import SettingsTabs, { useSettingsTab } from '../components/settings/SettingsTabs';
 
 const inputClass = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none';
 const LEVELS = ['view', 'manage', '*'];
@@ -1094,7 +1095,7 @@ function AuthModePanel() {
 /* ── Page ────────────────────────────────────────────────────────────────── */
 export default function AdminUsersPage() {
   const { hasPermission, loading: authLoading } = useAuth();
-  const [tab, setTab] = useState('users');
+  const [tab, setTab] = useSettingsTab(TABS, 'users');
 
   if (authLoading) return <p className="text-xs text-ink-faint">Loading…</p>;
 
@@ -1115,20 +1116,7 @@ export default function AdminUsersPage() {
         <AdminNav />
         <div className="flex flex-col gap-4 flex-1 min-w-0">
           <AuthModePanel />
-          <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 self-start">
-            {TABS.map(t => {
-              const Icon = t.icon;
-              const active = tab === t.key;
-              return (
-                <button key={t.key} onClick={() => setTab(t.key)}
-                  className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer ${
-                    active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
-                  }`}>
-                  <Icon size={13} className={active ? 'text-brand' : ''} /> {t.label}
-                </button>
-              );
-            })}
-          </div>
+          <SettingsTabs tabs={TABS} active={tab} onChange={setTab} label="Users and access" />
 
           {tab === 'users' && <UsersTab />}
           {tab === 'groups' && <GroupsTab />}
