@@ -242,40 +242,26 @@ describe('vCenter long-term history sampling', () => {
     expect(hostDaily('esx-a2')).toMatchObject({ samples: 4, disconnected_samples: 0 });
   });
 
-  it('retentionDays defaults and clamps', () => {
-    const del = () => db.prepare("DELETE FROM app_settings WHERE key IN ('vcenter_vm_history_days', 'vcenter_host_history_days', 'vcenter_cluster_history_days', 'vcenter_datastore_history_days', 'vcenter_daily_history_days', 'vcenter_event_retention_days')").run();
-    const { setSetting } = require('../services/settings');
-    del();
-    expect(cap().retentionDays()).toEqual({
-      vmHistoryDays: 90, hostHistoryDays: 90, clusterHistoryDays: 365, datastoreHistoryDays: 365, dailyHistoryDays: 730, eventRetentionDays: 90,
-    });
-    setSetting('vcenter_vm_history_days', '5');
-    setSetting('vcenter_event_retention_days', '9999');
-    setSetting('vcenter_host_history_days', 'abc');
-    setSetting('vcenter_cluster_history_days', '200');
-    const r = cap().retentionDays();
-    expect(r.vmHistoryDays).toBe(30);
-    expect(r.eventRetentionDays).toBe(365);
-    expect(r.hostHistoryDays).toBe(90);
-    expect(r.clusterHistoryDays).toBe(200);
-    del();
-  });
-
-  it('prune honours a saved vcenter_vm_history_days and the daily window', () => {
-    const { setSetting } = require('../services/settings');
+  it('prune follows the Data retention trending bucket for vcenter', () => {
+    const retention = require('../core/retention');
     const ins = db.prepare("INSERT INTO vcenter_vm_capacity_history (vcenter_id, captured_at, vm_name) VALUES (?, datetime('now', '-40 days'), 'old-vm')");
     ins.run(vcId);
     cap().writeCapacitySample(vcId, { force: true });
-    expect(db.prepare("SELECT COUNT(*) n FROM vcenter_vm_capacity_history WHERE vm_name = 'old-vm'").get().n).toBe(1); // default 90 d keeps it
-    setSetting('vcenter_vm_history_days', '30');
+    expect(db.prepare("SELECT COUNT(*) n FROM vcenter_vm_capacity_history WHERE vm_name = 'old-vm'").get().n).toBe(1); // default 365 d keeps it
+    retention.setPlatform('vcenter', 'trending', 30);
     cap().writeCapacitySample(vcId, { force: true });
     expect(db.prepare("SELECT COUNT(*) n FROM vcenter_vm_capacity_history WHERE vm_name = 'old-vm'").get().n).toBe(0);
 
+    retention.setPlatform('vcenter', 'trending', 0);
+    ins.run(vcId);
     db.prepare("INSERT INTO vcenter_vm_daily (vcenter_id, vm_name, day) VALUES (?, 'gone-vm', date('now', '-800 days'))").run(vcId);
-    db.prepare("INSERT INTO vcenter_host_daily (vcenter_id, host_name, day) VALUES (?, 'gone-host', date('now', '-800 days'))").run(vcId);
+    cap().writeCapacitySample(vcId, { force: true });
+    expect(db.prepare("SELECT COUNT(*) n FROM vcenter_vm_capacity_history WHERE vm_name = 'old-vm'").get().n).toBe(1); // 0 = keep forever
+    expect(db.prepare("SELECT COUNT(*) n FROM vcenter_vm_daily WHERE vm_name = 'gone-vm'").get().n).toBe(1);
+
+    retention.setPlatform('vcenter', 'trending', 365);
     cap().writeCapacitySample(vcId, { force: true });
     expect(db.prepare("SELECT COUNT(*) n FROM vcenter_vm_daily WHERE vm_name = 'gone-vm'").get().n).toBe(0);
-    expect(db.prepare("SELECT COUNT(*) n FROM vcenter_host_daily WHERE host_name = 'gone-host'").get().n).toBe(0);
-    db.prepare("DELETE FROM app_settings WHERE key = 'vcenter_vm_history_days'").run();
+    retention.setPlatform('vcenter', 'trending', null);
   });
 });

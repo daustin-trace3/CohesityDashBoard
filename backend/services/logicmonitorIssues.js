@@ -5,7 +5,7 @@
 // collector health, dead devices, interface trends, alert storms, new devices
 // and the check rules from logicmonitorChecks. Issue identity is
 // `type|source|target`.
-const { pruneInBatches } = require('../core/dbPrune');
+const retention = require('../core/retention');
 const { memoByDbState, memoByTtl } = require('../core/dbMemo');
 const DS_INDEX_TTL_MS = 60000;
 const db = require('../db/database');
@@ -21,7 +21,6 @@ const THRESHOLD_DEFS = {
   lm_if_flap_warn: { def: 3, min: 1, max: 100, label: 'Interface status changes in 24 h warning' },
   lm_dead_grace_min: { def: 10, min: 0, max: 1440, label: 'Dead device grace (minutes)' },
   lm_alert_storm_count: { def: 50, min: 5, max: 10000, label: 'Alert storm (alerts in 15 min)' },
-  lm_alert_retention_days: { def: 90, min: 1, max: 365, label: 'Cleared alert retention (days)' },
   lm_new_device_days: { def: 3, min: 0, max: 30, label: 'New device notice (days)' },
   lm_interface_history_days: { def: 30, min: 7, max: 90, label: 'Interface history retention (days)' },
   ...checks.CHECK_THRESHOLD_DEFS,
@@ -55,7 +54,6 @@ const THRESHOLD_DEFS = {
   // catalog-only cap above applies to sources with raw polling switched off).
   lm_raw_calls_per_tick: { def: 600, min: 50, max: 3000, label: 'Raw DataSource calls per run (estate default)' },
   lm_ds_history_days: { def: 14, min: 3, max: 90, label: 'DataSource metric history retention (days)' },
-  lm_daily_history_days: { def: 365, min: 30, max: 1095, label: 'Daily history retention (days)' },
   lm_fw_session_warn_pct: { def: 80, min: 50, max: 100, label: 'Firewall session table warning (%)' },
   lm_cpu_warn_pct: { def: 85, min: 50, max: 100, label: 'Device CPU warning (%)' },
   lm_mem_warn_pct: { def: 90, min: 50, max: 100, label: 'Device memory warning (%)' },
@@ -1153,7 +1151,7 @@ const reconcileIssueHistory = () => {
   try { circuits.computeSiteWanState(db); } catch { /* best effort */ }
   const current = new Map(computeIssues().map((i) => [issueKey(i), i]));
   const out = reconcileIssueHistoryTxn.immediate(current);
-  pruneInBatches(db, 'lm_issue_history', "status = 'resolved' AND resolved_at < datetime('now', '-90 days')");
+  retention.prune(db, { platform: 'logicmonitor', bucket: 'events', table: 'lm_issue_history', column: 'resolved_at', where: "status = 'resolved'" });
   return out;
 };
 

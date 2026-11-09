@@ -7,12 +7,15 @@ import HeliosConnectTab from '../components/cohesity/HeliosConnectTab';
 import DirectClustersTab from '../components/cohesity/DirectClustersTab';
 import PlatformAlertNotifications from '../components/PlatformAlertNotifications';
 import PlatformSettingsLayout from '../components/PlatformSettingsLayout';
+import { RetentionPanel } from '../components/settings/RetentionControls';
+import { Database } from 'lucide-react';
 
 const TABS = [
   { key: 'helios', label: 'Helios (SaaS)', icon: Cloud },
   { key: 'direct', label: 'Direct Clusters', icon: Server },
   { key: 'entitlement', label: 'Licensing', icon: BadgeCheck },
   { key: 'polling', label: 'Polling', icon: RadioTower },
+  { key: 'retention', label: 'Data retention', icon: Database },
   { key: 'alerts', label: 'Alert Notifications', icon: BellRing },
 ];
 
@@ -265,6 +268,7 @@ export default function SettingsPage() {
 
       {/* Section tabs */}
       <PlatformSettingsLayout brand={'#6CB33F'} label="Cohesity" sections={TABS} active={tab} onSelect={setTab}>
+      {tab === 'retention' && <RetentionPanel platform="cohesity" />}
 
       {/* Helios (SaaS) */}
       {tab === 'helios' && <HeliosConnectTab />}

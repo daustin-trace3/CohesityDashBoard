@@ -5,6 +5,7 @@ import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { LoadingPanel, Badge } from '../../components/ui/primitives';
 import { SettingRow, SettingGroup, Toggle, TabSaveBar, numberCls, inputCls } from '../../components/settings/SettingRow';
+import { RetentionPanel } from '../../components/settings/RetentionControls';
 import { SectionPanel, btnGhost, btnPrimary, headRow, sel, inp } from './ui';
 import { severityTone, fmtNum, arr } from './helpers';
 
@@ -432,24 +433,22 @@ export function LmServicesRulesPanel() {
   );
 }
 
-const RET_KEYS = ['lm_alert_retention_days', 'lm_interface_history_days', 'lm_check_history_days', 'lm_ds_history_days', 'lm_daily_history_days', 'lm_webhook_rate_per_min', 'lm_metrics_data_calls_per_tick'];
+const RET_KEYS = ['lm_interface_history_days', 'lm_check_history_days', 'lm_ds_history_days', 'lm_webhook_rate_per_min', 'lm_metrics_data_calls_per_tick'];
 
 export function LmRetentionPanel() {
   const cfg = useLmConfig(RET_KEYS);
   return (
-    <PanelShell icon={Archive} cfg={cfg} title="Retention and limits"
-      blurb="How long ICC keeps the LogicMonitor history it collects, and how many webhook deliveries it accepts. These raise no issues.">
-      <SettingGroup title="Retention">
-        <NumRow cfg={cfg} k="lm_alert_retention_days" label="Cleared alerts" unit="days"
-          tip="Cleared LogicMonitor alerts older than this are deleted when a poll prunes history. Open alerts are not deleted." />
+    <>
+    <div className="mb-4"><RetentionPanel platform="logicmonitor" /></div>
+    <PanelShell icon={Archive} cfg={cfg} title="Raw samples and limits"
+      blurb="How long ICC keeps the high-frequency raw samples, which only this platform uses, and how many webhook deliveries it accepts. Alerts, daily history and the rest follow Data retention above. These raise no issues.">
+      <SettingGroup title="Raw samples (platform only)">
         <NumRow cfg={cfg} k="lm_interface_history_days" label="Interface history" unit="days"
           tip="Interface samples older than this are deleted. Interface baselines and the circuit saturation window can only use the history that is kept." />
         <NumRow cfg={cfg} k="lm_check_history_days" label="Check history" unit="days"
           tip="Ping and website check samples older than this are deleted. The latency baseline can only use the history that is kept." />
         <NumRow cfg={cfg} k="lm_ds_history_days" label="DataSource metric history" unit="days"
           tip="History samples from the DataSource metrics tier (session counts, CPU, memory and similar) older than this are deleted. Latest values are always kept." />
-        <NumRow cfg={cfg} k="lm_daily_history_days" label="Daily history" unit="days"
-          tip="One row per day is kept for every DataSource metric, per-device dead, collector and SDT time, alert counts, and the estate snapshots on the Trends page. Rows older than this are deleted. This is what the 30, 90 and 365 day ranges read." />
       </SettingGroup>
       <SettingGroup title="Limits">
         <NumRow cfg={cfg} k="lm_webhook_rate_per_min" label="Webhook deliveries accepted" unit="per minute"
@@ -458,6 +457,7 @@ export function LmRetentionPanel() {
           tip="Cap on LogicMonitor data calls the DataSource metrics tier makes each round, least recently polled first. One call reads all instances of one DataSource on one device. Raise it if devices fall behind, at the cost of more API load." />
       </SettingGroup>
     </PanelShell>
+    </>
   );
 }
 

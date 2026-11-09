@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Settings, Cloud, Server, HardDrive, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Plus, X, PlugZap, Save, SlidersHorizontal } from 'lucide-react';
+import { Settings, Cloud, Server, HardDrive, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Plus, X, PlugZap, Save, SlidersHorizontal, Database } from 'lucide-react';
+import { RetentionPanel } from '../../components/settings/RetentionControls';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
@@ -19,6 +20,7 @@ const SECTIONS = [
   ...TABS.map((t) => ({ ...t, group: 'Connections' })),
   { key: 'thresholds', label: 'Alert Thresholds', icon: SlidersHorizontal, group: 'Alerts' },
   { key: 'notify', label: 'Alert Notifications', icon: BellRing, group: 'Alerts' },
+  { key: 'retention', label: 'Data retention', icon: Database, group: 'Tuning' },
 ];
 
 const ALTA_EMPTY = { name: '', host: '', apiKey: '', pollingIntervalMinutes: 15 };
@@ -40,6 +42,7 @@ export default function NbSettingsPage() {
       {tab === 'hardware' && <ApplianceHardwareTab />}
       {tab === 'thresholds' && <AlertThresholdsPanel />}
       {tab === 'notify' && <PlatformAlertNotifications platform="netbackup" label="NetBackup" />}
+      {tab === 'retention' && <RetentionPanel platform="netbackup" />}
       </PlatformSettingsLayout>
     </div>
   );

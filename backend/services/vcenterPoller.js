@@ -4,7 +4,7 @@
 // TLS cert via REST, enriches hosts with maintenance mode + CPU/memory
 // quickstats via SOAP (best-effort), replaces the inventory tables for that
 // vCenter and appends a metrics snapshot.
-const { pruneInBatches } = require('../core/dbPrune');
+const retention = require('../core/retention');
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const { mapLimit, valuesOrThrow, callsInFlight } = require('../core/concurrency');
@@ -13,7 +13,7 @@ const {
   fetchInventorySoap, fetchEvents, fetchVmTags,
 } = require('./vcenterApi');
 const { reconcileIssueHistory } = require('./vcenterIssues');
-const { writeCapacitySample, ensureDefaultSites, retentionDays } = require('./vcenterCapacity');
+const { writeCapacitySample, ensureDefaultSites } = require('./vcenterCapacity');
 const logger = require('../utils/logger');
 
 const safeMsg = (e) => e?.response ? `HTTP ${e.response.status}` : (e?.message || String(e));
@@ -341,7 +341,7 @@ async function collectEvents(vc) {
       ? new Date(new Date(latest).getTime() - 5 * 60000).toISOString()
       : new Date(Date.now() - 48 * 3600000).toISOString();
     const inserted = storeEvents(vc.id, await fetchEvents(vc, since));
-    pruneInBatches(db, 'vcenter_events', "created_at < datetime('now', ?)", [`-${retentionDays().eventRetentionDays} days`]);
+    retention.prune(db, { platform: 'vcenter', bucket: 'events', table: 'vcenter_events', column: 'created_at' });
     if (inserted) logger.debug(`[VcPoller] ${vc.name}: ${inserted} new event(s)`);
   } catch (err) {
     logger.debug(`[VcPoller] event fetch failed for ${vc.name}: ${safeMsg(err)}`);
@@ -352,8 +352,8 @@ async function pollVcenter(vc) {
   try {
     const data = await collect(vc);
     store(vc.id, data);
-    pruneInBatches(db, 'vcenter_vm_filesystem_history', "vcenter_id = ? AND day < date('now', '-730 days')", [vc.id]);
-    pruneInBatches(db, 'vcenter_metrics_history', "captured_at < datetime('now', '-365 days')");
+    retention.prune(db, { platform: 'vcenter', bucket: 'trending', table: 'vcenter_vm_filesystem_history', column: 'day', kind: 'date', where: 'vcenter_id = ?', params: [vc.id] });
+    retention.prune(db, { platform: 'vcenter', bucket: 'trending', table: 'vcenter_metrics_history', column: 'captured_at' });
     db.prepare(`
       UPDATE vcenter_vcenters SET last_poll_status = 'success', last_poll_error = NULL,
         last_poll_at = datetime('now') WHERE id = ?

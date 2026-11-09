@@ -6,7 +6,7 @@
 // cluster/backup, cluster/status, cluster/log, replaces the inventory tables
 // for that server and appends one metrics row per node. rrddata is NOT
 // polled/stored — routes proxy it live from upstream.
-const { pruneInBatches } = require('../core/dbPrune');
+const retention = require('../core/retention');
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const proxmoxApi = require('./proxmoxApi');
@@ -474,8 +474,8 @@ async function pollProxmox(server) {
   try {
     const data = await collect(server);
     store(server.id, data);
-    pruneInBatches(db, 'proxmox_events', "server_id = ? AND event_time < datetime('now', '-14 days')", [server.id]);
-    pruneInBatches(db, 'proxmox_tasks', "server_id = ? AND started_at < datetime('now', '-14 days')", [server.id]);
+    retention.prune(db, { platform: 'proxmox', bucket: 'events', table: 'proxmox_events', column: 'event_time', where: 'server_id = ?', params: [server.id] });
+    retention.prune(db, { platform: 'proxmox', bucket: 'events', table: 'proxmox_tasks', column: 'started_at', where: 'server_id = ?', params: [server.id] });
     db.prepare(`
       UPDATE proxmox_servers SET last_poll_status = 'success', last_poll_error = NULL,
         last_poll_at = datetime('now') WHERE id = ?

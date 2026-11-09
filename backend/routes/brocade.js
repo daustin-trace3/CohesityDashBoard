@@ -11,7 +11,7 @@ const {
   brocadePollerHandle: brocadePoller, portStatsRetentionDays, resolveFosTarget,
 } = require('../services/brocadePoller');
 const {
-  healthWarnScore, healthCritScore, certWarnDays, eventStormCount, eventRetentionDays,
+  healthWarnScore, healthCritScore, certWarnDays, eventStormCount,
   computeIssues,
 } = require('../services/brocadeIssues');
 const brocadeAdvisor = require('../services/advisors/brocadeAdvisor');
@@ -1057,7 +1057,6 @@ router.get('/config', (req, res, next) => {
       healthCritScore: healthCritScore(),
       certWarnDays: certWarnDays(),
       eventStormCount: eventStormCount(),
-      eventRetentionDays: eventRetentionDays(),
       portStatsRetentionDays: portStatsRetentionDays(),
     });
   } catch (err) { next(err); }
@@ -1068,17 +1067,18 @@ router.put('/config', [
   body('healthCritScore').optional().isInt({ min: 1, max: 100 }).toInt(),
   body('certWarnDays').optional().isInt({ min: 1, max: 365 }).toInt(),
   body('eventStormCount').optional().isInt({ min: 1, max: 1000 }).toInt(),
-  body('eventRetentionDays').optional().isInt({ min: 1, max: 365 }).toInt(),
   body('portStatsRetentionDays').optional().isInt({ min: 1, max: 90 }).toInt(),
 ], validate, (req, res, next) => {
   try {
     const { setSetting } = require('../services/settings');
+    if (req.body.eventRetentionDays !== undefined) {
+      return res.status(400).json({ error: 'Retention moved to Data retention (Settings > Data retention, or Global Settings > Platforms).', field: 'eventRetentionDays' });
+    }
     const map = {
       healthWarnScore: 'brocade_health_warn_score',
       healthCritScore: 'brocade_health_crit_score',
       certWarnDays: 'brocade_cert_warn_days',
       eventStormCount: 'brocade_event_storm_count',
-      eventRetentionDays: 'brocade_event_retention_days',
       portStatsRetentionDays: 'brocade_port_stats_retention_days',
     };
     for (const [k, settingKey] of Object.entries(map)) {

@@ -1,4 +1,4 @@
-const { pruneInBatches } = require('../core/dbPrune');
+const retention = require('../core/retention');
 const cron = require('node-cron');
 const db = require('../db/database');
 const {
@@ -26,10 +26,10 @@ function isoDurationToSeconds(s) {
   return (d * 86400) + (h * 3600) + (min * 60) + sec;
 }
 
-// Retention: prune NetApp metrics older than 90 days, daily at 02:20.
+// Retention: trending history follows the Data retention setting, daily at 02:20.
 cron.schedule('20 2 * * *', () => {
   try {
-    const r = pruneInBatches(db, 'netapp_metrics_history', "captured_at < datetime('now', '-90 days')");
+    const r = retention.prune(db, { platform: 'netapp', bucket: 'trending', table: 'netapp_metrics_history', column: 'captured_at' });
     if (r.deleted > 0) logger.info(`[NetAppPoller] Pruned ${r.deleted} old metrics row(s)`);
   } catch (err) {
     logger.error('[NetAppPoller] Failed to prune netapp_metrics_history:', err.message);

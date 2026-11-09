@@ -6,7 +6,7 @@
 // error). Inventory tables are replaced per instance; a metrics snapshot is
 // appended per poll. Hardware logs are swept in the background after each
 // poll, incrementally from each device's stored MAX(seq).
-const { pruneInBatches } = require('../core/dbPrune');
+const retention = require('../core/retention');
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const { mapLimit, callsInFlight } = require('../core/concurrency');
@@ -189,7 +189,7 @@ async function sweepHardwareLogs(ome, serverDevices) {
         }
       }
     });
-    pruneInBatches(db, 'dell_hardware_logs', "created_at < datetime('now', '-365 days')");
+    retention.prune(db, { platform: 'dell', bucket: 'events', table: 'dell_hardware_logs', column: 'created_at' });
     logger.info(`[DellPoller] ${ome.name}: hardware-log sweep stored ${added} new entr${added === 1 ? 'y' : 'ies'}${backlogDevices ? ` (${backlogDevices} device(s) backlogged from scratch)` : ''}`);
   } finally {
     hwlogSweepInFlight.delete(ome.id);
@@ -245,7 +245,7 @@ const store = db.transaction((omeId, { info, devices, components, alerts, warran
     alertStmt.run(omeId, a.alertId, a.severity, a.status, a.category,
       a.subcategory, a.messageId, a.message, a.deviceName, a.serviceTag, a.createdAt);
   }
-  db.prepare("DELETE FROM dell_alerts WHERE created_at < datetime('now', '-90 days')").run();
+  retention.prune(db, { platform: 'dell', bucket: 'events', table: 'dell_alerts', column: 'created_at' });
 
   if (warranties) {
     db.prepare('DELETE FROM dell_warranties WHERE ome_id = ?').run(omeId);
@@ -392,7 +392,7 @@ async function pollDell(ome) {
   try {
     const data = await collect(ome);
     store(ome.id, data);
-    pruneInBatches(db, 'dell_metrics_history', "captured_at < datetime('now', '-365 days')");
+    retention.prune(db, { platform: 'dell', bucket: 'trending', table: 'dell_metrics_history', column: 'captured_at' });
     db.prepare(`
       UPDATE dell_ome_instances SET last_poll_status = 'success', last_poll_error = NULL,
         last_poll_at = datetime('now') WHERE id = ?

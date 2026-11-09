@@ -5,7 +5,7 @@
 // state timeline (service_status_timeline) the board API carries forward
 // per day. Code derives the verdict from evidence it gathers itself; the AI
 // may narrate and may only override the verdict when it states a reason.
-const { pruneInBatches } = require('../core/dbPrune');
+const retention = require('../core/retention');
 const crypto = require('crypto');
 const db = require('../db/database');
 const logger = require('../utils/logger');
@@ -318,18 +318,18 @@ function recomputeStates(now, platformIds) {
 
 function pruneOld(now) {
   try {
-    const cutoff90 = new Date(Date.now() - 90 * 86400000).toISOString();
-    const stale = db.prepare(
-      'SELECT id FROM service_alert_events WHERE cleared_at IS NOT NULL AND cleared_at < ?'
-    ).all(cutoff90);
+    const eventDays = retention.days('icc', 'events');
+    const stale = eventDays === 0 ? [] : (() => {
+      const age = retention.agePredicate('cleared_at', 'iso', eventDays);
+      return db.prepare(`SELECT id FROM service_alert_events WHERE cleared_at IS NOT NULL AND ${age.sql}`).all(...age.params);
+    })();
     if (stale.length) {
       const delAnalysis = db.prepare('DELETE FROM service_alert_analyses WHERE event_id = ?');
       const delEvent = db.prepare('DELETE FROM service_alert_events WHERE id = ?');
       for (const row of stale) { delAnalysis.run(row.id); delEvent.run(row.id); }
     }
-    const cutoff400 = new Date(Date.now() - 400 * 86400000).toISOString();
-    pruneInBatches(db, 'service_status_timeline', 'at < ?', [cutoff400]);
-    pruneInBatches(db, 'service_group_status_timeline', 'at < ?', [cutoff400]);
+    retention.prune(db, { platform: 'icc', bucket: 'trending', table: 'service_status_timeline', column: 'at', kind: 'iso' });
+    retention.prune(db, { platform: 'icc', bucket: 'trending', table: 'service_group_status_timeline', column: 'at', kind: 'iso' });
   } catch (err) {
     logger.error('[ServiceStatus] prune failed:', err.message);
   }

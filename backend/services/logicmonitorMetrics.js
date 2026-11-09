@@ -479,7 +479,7 @@ async function pollMetrics(source) {
 function pruneMetricsHistory(sourceId) {
   const days = threshold('lm_ds_history_days') || 14;
   pruneInBatches(db, 'lm_ds_metrics_history', 'source_id = ? AND sampled_at_epoch < ?', [sourceId, nowSec() - days * 86400]);
-  // Daily history is pruned with the other daily tables (pruneHistories, lm_daily_history_days).
+  // Daily history is pruned with the other daily tables (pruneHistories, Data retention trending bucket).
   const old = "stale = 1 AND updated_at < datetime('now', '-7 days')";
   pruneInBatches(db, 'lm_ds_metrics', `source_id = ? AND EXISTS (
       SELECT 1 FROM lm_ds_instances i WHERE i.source_id = lm_ds_metrics.source_id AND i.lm_device_id = lm_ds_metrics.lm_device_id

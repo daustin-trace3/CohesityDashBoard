@@ -5,6 +5,7 @@
 // health bubble (routes/poller.js) has something to key off of instead of
 // always reading grey.
 const db = require('../db/database');
+const retention = require('../core/retention');
 const cron = require('node-cron');
 const { createGlobalTask } = require('../core/pollerFramework');
 const { getSetting } = require('./settings');
@@ -213,7 +214,7 @@ function appendSnapshot(rows, alerts) {
     rows.reduce((s, r) => s + (r.used || 0), 0),
     alerts.length
   );
-  db.prepare("DELETE FROM pure1_metrics_history WHERE captured_at < datetime('now', '-365 days')").run();
+  retention.prune(db, { platform: 'pure', bucket: 'trending', table: 'pure1_metrics_history', column: 'captured_at' });
 }
 
 async function refreshAll() {

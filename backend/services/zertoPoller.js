@@ -2,7 +2,7 @@
 // everything in a handful of calls; there are no per-source connections to
 // schedule). Current-state tables are replaced wholesale per poll; an
 // account-level snapshot is appended to zerto_metrics_history for trends.
-const { pruneInBatches } = require('../core/dbPrune');
+const retention = require('../core/retention');
 const db = require('../db/database');
 const cron = require('node-cron');
 const { createGlobalTask } = require('../core/pollerFramework');
@@ -185,8 +185,7 @@ async function collectEvents() {
     if (!oldest || Number.isNaN(nextEnd.getTime()) || nextEnd >= end || nextEnd <= start) break;
     end = nextEnd;
   }
-  const retentionDays = Math.min(365, Math.max(1, Number(getSetting('zerto_event_retention_days')) || 30));
-  pruneInBatches(db, 'zerto_events', 'occurred_on < ?', [new Date(Date.now() - retentionDays * 864e5).toISOString()]);
+  retention.prune(db, { platform: 'zerto', bucket: 'events', table: 'zerto_events', column: 'occurred_on', kind: 'iso' });
   return inserted;
 }
 
@@ -211,7 +210,7 @@ function appendSnapshot({ sites, vpgData, alerts, vms }) {
     vms.reduce((n, v) => n + (v.provisionedStorageMb || 0), 0),
     vms.reduce((n, v) => n + (v.usedStorageMb || 0), 0)
   );
-  pruneInBatches(db, 'zerto_metrics_history', "captured_at < datetime('now', '-365 days')");
+  retention.prune(db, { platform: 'zerto', bucket: 'trending', table: 'zerto_metrics_history', column: 'captured_at' });
 }
 
 async function refreshAll() {

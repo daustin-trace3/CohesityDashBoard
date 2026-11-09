@@ -4,7 +4,7 @@
 // servers, roles, deployments, metrics) and id 'bluecat-enumerate' (per-
 // network address enumeration + counts). Every section runs through
 // trySection so a transient API failure keeps prior rows in place.
-const { pruneInBatches } = require('../core/dbPrune');
+const retention = require('../core/retention');
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const { mapLimit, valuesOrThrow, callsInFlight } = require('../core/concurrency');
@@ -450,7 +450,7 @@ async function pollInventory(source) {
       networks: counts.networks || 0, networksLowSpace, rangesLowSpace,
       devices: counts.devices || 0, servers: counts.servers || 0, serversDown: counts.servers_down || 0,
     });
-    pruneInBatches(db, 'bluecat_metrics_history', "captured_at < datetime('now', '-90 days')");
+    retention.prune(db, { platform: 'bluecat', bucket: 'trending', table: 'bluecat_metrics_history', column: 'captured_at' });
 
     db.prepare(`
       UPDATE bluecat_sources SET last_poll_status = 'success', last_poll_error = NULL, last_poll_at = datetime('now') WHERE id = ?

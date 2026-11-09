@@ -17,6 +17,7 @@
 const db = require('../db/database');
 const { getSetting, setSetting } = require('./settings');
 const { pruneInBatches } = require('../core/dbPrune');
+const retention = require('../core/retention');
 const awsApi = require('./awsApi');
 const awsPricing = require('./awsPricing');
 const awsCostEstimate = require('./awsCostEstimate');
@@ -1070,18 +1071,24 @@ function comparisonLatest({ accountId } = {}) {
 }
 
 function runPrunes(now) {
-  const cutoffDay = (days) => addDays(utcDay(now), -days);
   const cutoffIso = (days) => new Date(new Date(now).getTime() - days * DAY_MS).toISOString();
+  const nowMs = new Date(now).getTime();
+  const trend = (table, column, kind) => retention.prune(db, { platform: 'aws', bucket: 'trending', table, column, kind, now: nowMs });
   for (const table of ['aws_cost_alloc_daily', 'aws_sp_utilization_daily', 'aws_sp_coverage_daily', 'aws_ri_utilization_daily', 'aws_ri_coverage_daily']) {
-    pruneInBatches(db, table, 'day < ?', [cutoffDay(400)]);
+    trend(table, 'day', 'date');
   }
-  pruneInBatches(db, 'aws_cost_forecast', 'generated_on < ?', [cutoffDay(400)]);
-  pruneInBatches(db, 'aws_cost_anomalies', "status = 'closed' AND last_seen_at < ?", [cutoffIso(180)]);
-  pruneInBatches(db, 'aws_budget_status', 'month < ?', [monthOf(addMonths(utcDay(now), -24))]);
+  trend('aws_cost_forecast', 'generated_on', 'date');
+  retention.prune(db, { platform: 'aws', bucket: 'events', table: 'aws_cost_anomalies', column: 'last_seen_at', kind: 'iso', where: "status = 'closed'", now: nowMs });
   pruneInBatches(db, 'aws_recommendation_state', "status IN ('dismissed', 'done') AND updated_at < ?", [cutoffIso(365)]);
-  pruneInBatches(db, 'aws_cost_resource_estimate_daily', 'day < ?', [cutoffDay(400)]);
-  pruneInBatches(db, 'aws_ec2_metrics_daily', 'day < ?', [cutoffDay(400)]);
-  pruneInBatches(db, 'aws_cost_comparison', 'comparison_month < ?', [monthOf(addMonths(utcDay(now), -26))]);
+  trend('aws_cost_resource_estimate_daily', 'day', 'date');
+  trend('aws_ec2_metrics_daily', 'day', 'date');
+  // Month keyed tables keep ceil(days / 30) months of the trending window (0 = keep forever).
+  const trendDays = retention.days('aws', 'trending');
+  if (trendDays > 0) {
+    const cutMonth = monthOf(addMonths(utcDay(now), -Math.ceil(trendDays / 30)));
+    pruneInBatches(db, 'aws_budget_status', 'month < ?', [cutMonth]);
+    pruneInBatches(db, 'aws_cost_comparison', 'comparison_month < ?', [cutMonth]);
+  }
 }
 
 /** The Savings Plan arn tail ("abc-123" from "arn:aws:savingsplans::1234:savingsplan/abc-123"). */
@@ -1578,6 +1585,7 @@ async function captureFinops(account, { skipped = [], now = new Date() } = {}) {
 }
 
 module.exports = {
+  runPrunes,
   CAPABILITIES,
   CAPABILITY_ACTIONS,
   FREE_CAPABILITIES,

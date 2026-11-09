@@ -2,7 +2,7 @@
 // lifecycle history: each poll reconciles the freshly computed issue set
 // against vcenter_issue_history so every issue gets first-seen / resolved
 // timestamps instead of existing only as a live snapshot.
-const { pruneInBatches } = require('../core/dbPrune');
+const retention = require('../core/retention');
 const db = require('../db/database');
 const { getSetting } = require('./settings');
 
@@ -182,7 +182,7 @@ const reconcileIssueHistoryTxn = db.transaction(() => {
 // process writes mid-transaction, and that error ignores busy_timeout.
 const reconcileIssueHistory = () => {
   const out = reconcileIssueHistoryTxn.immediate();
-  pruneInBatches(db, 'vcenter_issue_history', "status = 'resolved' AND resolved_at < datetime('now', '-90 days')");
+  retention.prune(db, { platform: 'vcenter', bucket: 'events', table: 'vcenter_issue_history', column: 'resolved_at', where: "status = 'resolved'" });
   return out;
 };
 

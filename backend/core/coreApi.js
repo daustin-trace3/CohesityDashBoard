@@ -43,6 +43,11 @@ function buildCoreApi(overrides = {}) {
         derivedPlatformFor: r.derivedPlatformFor, listDerived: r.listDerived,
       });
     },
+    get retention() {
+      if (overrides.retention) return overrides.retention;
+      const r = require('./retention');
+      return Object.freeze({ BUCKETS: r.BUCKETS, days: r.days, resolve: r.resolve, prune: r.prune, agePredicate: r.agePredicate });
+    },
     get anonymizer() {
       if (overrides.anonymizer) return overrides.anonymizer;
       return require('../services/anonymizer'); // { createAnonymizer, PROMPT_NOTE }

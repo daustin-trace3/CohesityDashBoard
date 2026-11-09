@@ -5,6 +5,8 @@ import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
 import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
+import { RetentionPanel } from '../../components/settings/RetentionControls';
+import { Database } from 'lucide-react';
 import { BRAND, fmtWhen } from './helpers';
 
 const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
@@ -177,6 +179,7 @@ export default function AriaOpsSettingsPage() {
   const [section, setSection] = useState('sources');
   const SECTIONS = [
     { key: 'sources', label: 'Instances', icon: Server },
+    { key: 'retention', label: 'Data retention', icon: Database },
   ];
 
   return (
@@ -184,6 +187,7 @@ export default function AriaOpsSettingsPage() {
       <PageHeader icon={Settings} title="Aria Operations Settings" description="Register vROps instances — each is polled directly with its own credentials" />
 
       <PlatformSettingsLayout brand={BRAND} label="Aria Operations" sections={SECTIONS} active={section} onSelect={setSection}>
+      {section === 'retention' && <RetentionPanel platform="ariaops" />}
       {section === 'sources' && (<>
 
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>

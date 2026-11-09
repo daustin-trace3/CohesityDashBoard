@@ -5,7 +5,7 @@
 // fail simply skip their write for this cycle; rows from the last good poll
 // stay in place (marked stale only when the section itself succeeded and
 // omitted them).
-const { pruneInBatches } = require('../core/dbPrune');
+const retention = require('../core/retention');
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const { mapLimit, callsInFlight } = require('../core/concurrency');
@@ -677,8 +677,7 @@ async function pollEvents(source) {
   }
 
   try {
-    const retentionDays = require('./brocadeIssues').eventRetentionDays();
-    pruneInBatches(db, 'brocade_events', 'source_id = ? AND last_occurred_ms < ?', [source.id, Date.now() - retentionDays * 86400000]);
+    retention.prune(db, { platform: 'brocade', bucket: 'events', table: 'brocade_events', column: 'last_occurred_ms', kind: 'epoch_ms', where: 'source_id = ?', params: [source.id] });
 
     if (!failure) {
       db.prepare(`UPDATE brocade_sources SET last_event_poll_at=datetime('now'), last_event_poll_status='success',

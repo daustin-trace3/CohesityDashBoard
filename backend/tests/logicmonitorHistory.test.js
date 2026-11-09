@@ -148,7 +148,8 @@ describe('device daily', () => {
 });
 
 describe('retention', () => {
-  it('pruneHistories honours a saved lm_daily_history_days', () => {
+  it('pruneHistories follows the Data retention trending bucket for logicmonitor', () => {
+    const retention = require('../core/retention');
     const sid = insertSource();
     const insDs = db.prepare(`INSERT INTO lm_ds_daily (source_id, lm_device_id, hds_id, instance_key, metric, day, samples, min_value, sum_value, max_value, last_value)
       VALUES (?, 1, 1, 'k', 'm', ?, 1, 1, 1, 1, 1)`);
@@ -158,19 +159,27 @@ describe('retention', () => {
       insDs.run(sid, day);
       insDev.run(sid, day);
     }
-    db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('lm_daily_history_days', '100')").run();
+    retention.setPlatform('logicmonitor', 'trending', 100);
     poller.pruneHistories(sid);
     expect(db.prepare('SELECT COUNT(*) c FROM lm_ds_daily').get().c).toBe(2);
     expect(db.prepare('SELECT COUNT(*) c FROM lm_device_daily').get().c).toBe(2);
-    db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('lm_daily_history_days', '30')").run();
+    retention.setPlatform('logicmonitor', 'trending', 30);
     poller.pruneHistories(sid);
     expect(db.prepare('SELECT COUNT(*) c FROM lm_ds_daily').get().c).toBe(1);
+    retention.setPlatform('logicmonitor', 'trending', 0);
+    insDs.run(sid, dayStr(Date.now() - 900 * 86400000));
+    poller.pruneHistories(sid);
+    expect(db.prepare('SELECT COUNT(*) c FROM lm_ds_daily').get().c).toBe(2); // 0 = keep forever
+    retention.setPlatform('logicmonitor', 'trending', null);
   });
 
-  it('defaults: 365 days daily history and 90 days cleared-alert retention', () => {
+  it('defaults: 365 days trending and 30 days events, no legacy threshold keys', () => {
+    const retention = require('../core/retention');
+    expect(retention.days('logicmonitor', 'trending')).toBe(365);
+    expect(retention.days('logicmonitor', 'events')).toBe(30);
     const t = require('../services/logicmonitorIssues').getThresholds();
-    expect(t.lm_daily_history_days).toBe(365);
-    expect(t.lm_alert_retention_days).toBe(90);
+    expect(t.lm_daily_history_days).toBeUndefined();
+    expect(t.lm_alert_retention_days).toBeUndefined();
   });
 });
 

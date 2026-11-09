@@ -5,7 +5,8 @@ import client from '../api/client';
 import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import AdminNav from '../components/AdminNav';
-import { SettingRow, numberCls } from '../components/settings/SettingRow';
+import { SettingRow, SettingGroup, numberCls } from '../components/settings/SettingRow';
+import { RetentionGlobalGroup } from '../components/settings/RetentionControls';
 import IntelligenceSettingsPage from './IntelligenceSettingsPage';
 import { SWITCHER_MODES, getSwitcherMode } from '../components/PlatformSwitcher';
 
@@ -268,6 +269,13 @@ export default function AdminSettingsPage() {
 
 
             <div className="pt-2 border-t border-cohesity-border/60">
+              <RetentionGlobalGroup />
+            </div>
+
+            <div className="pt-2 border-t border-cohesity-border/60">
+              <SettingGroup title="Fetch depth and ledgers">
+                <p className="text-[11px] text-ink-muted pt-2 leading-relaxed">How far back ICC asks each platform for job history, and ledgers that keep rows past the retention buckets.</p>
+            <div className="pt-2 border-t border-cohesity-border/60">
               <SettingRow label="Cohesity run history (days)" htmlFor="cohesity-run-history"
                 tip="How far back the Cohesity poller fetches protection runs. Raising it backfills the missing days at the next poll. Stored runs are kept until the retention below says otherwise.">
                 <input id="cohesity-run-history" type="number" min="30" max="365" step="1" value={cohesityRunHistoryDays}
@@ -292,6 +300,8 @@ export default function AdminSettingsPage() {
                   onChange={e => setNetbackupJobHistoryDays(e.target.value)} className={numberCls} />
                 <p className="text-[11px] text-ink-muted mt-1">7 to 365, default 30. Rows older than this are removed.</p>
               </SettingRow>
+            </div>
+              </SettingGroup>
             </div>
 
             <div className="pt-2 border-t border-cohesity-border/60">

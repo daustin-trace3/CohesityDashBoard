@@ -6,6 +6,8 @@ import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
 import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
+import { RetentionPanel } from '../../components/settings/RetentionControls';
+import { Database } from 'lucide-react';
 import { BRAND, fmtWhen } from './helpers';
 import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 import FinopsSettings from './finops/FinopsSettings';
@@ -301,6 +303,7 @@ export default function AwsSettingsPage() {
     { key: 'sources', label: 'Accounts', icon: Server },
     { key: 'thresholds', label: 'Alert Thresholds', icon: SlidersHorizontal },
     { key: 'finops', label: 'FinOps', icon: Coins },
+    { key: 'retention', label: 'Data retention', icon: Database },
     { key: 'notify', label: 'Alert Notifications', icon: BellRing },
   ];
 
@@ -309,6 +312,7 @@ export default function AwsSettingsPage() {
       <PageHeader icon={Settings} title="AWS Settings" description="Register AWS accounts — credentials are encrypted at rest, or fall back to the server's environment variables" />
 
       <PlatformSettingsLayout brand={BRAND} label="AWS" sections={SECTIONS} active={section} onSelect={setSection}>
+      {section === 'retention' && <RetentionPanel platform="aws" />}
       {section === 'sources' && (<>
 
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>

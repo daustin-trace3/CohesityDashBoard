@@ -5,6 +5,8 @@ import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, LoadingPanel, Badge, RefreshButton } from '../../components/ui/primitives';
 import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
+import { RetentionPanel } from '../../components/settings/RetentionControls';
+import { Database } from 'lucide-react';
 import { BRAND, timeAgo } from './helpers';
 import PureDirectArraysTab from './PureDirectArraysTab';
 import { copyText } from '../../utils/clipboard';
@@ -25,6 +27,7 @@ export function Field({ label, hint, children }) {
 const TABS = [
   { key: 'saas', label: 'Pure1 (SaaS)', icon: Cloud },
   { key: 'direct', label: 'Direct Arrays', icon: Server },
+  { key: 'retention', label: 'Data retention', icon: Database },
   { key: 'alerts', label: 'Alert Notifications', icon: BellRing },
 ];
 
@@ -34,6 +37,7 @@ export default function PureSettingsPage() {
     <div className="animate-fade-in">
       <PageHeader icon={Settings} title="Pure Settings" description="Pure1 cloud credentials, direct arrays and alert notifications" />
       <PlatformSettingsLayout brand={BRAND} label="Pure" sections={TABS} active={tab} onSelect={setTab}>
+      {tab === 'retention' && <RetentionPanel platform="pure" />}
       {tab === 'saas' && <Pure1SaaSTab />}
       {tab === 'direct' && <PureDirectArraysTab />}
       {tab === 'alerts' && <PlatformAlertNotifications platform="pure" label="Pure" />}

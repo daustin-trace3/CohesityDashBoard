@@ -1,4 +1,5 @@
 const { pruneInBatches } = require('../core/dbPrune');
+const retention = require('../core/retention');
 const cron = require('node-cron');
 const db = require('../db/database');
 const {
@@ -13,19 +14,19 @@ const { createPoller } = require('../core/pollerFramework');
 const pollerStatus = require('./pollerStatus');
 const { getCohesityAlertWindowDays, getCohesityRunHistoryDays, getCohesityRunRetentionDays, getSetting, setSetting } = require('./settings');
 
-// Retention: delete metrics older than 90 days — runs daily at 02:00
+// Retention: trending history follows the Data retention setting (default 365 days), runs daily at 02:00
 cron.schedule('0 2 * * *', () => {
   try {
-    const result = pruneInBatches(db, 'metrics_history', "captured_at < datetime('now', '-90 days')");
+    const result = retention.prune(db, { platform: 'cohesity', bucket: 'trending', table: 'metrics_history', column: 'captured_at' });
     if (result.deleted > 0) {
       logger.info(`[Retention] Pruned ${result.deleted} old metrics row(s)`);
     }
   } catch (err) {
     logger.error('[Retention] Failed to prune metrics_history:', err.message);
   }
-  // Workload trend snapshots keep 2 years of daily history.
+  // Workload trend snapshots follow the same trending setting.
   try {
-    const result = pruneInBatches(db, 'workload_history', "captured_at < datetime('now', '-730 days')");
+    const result = retention.prune(db, { platform: 'cohesity', bucket: 'trending', table: 'workload_history', column: 'captured_at' });
     if (result.deleted > 0) {
       logger.info(`[Retention] Pruned ${result.deleted} old workload row(s)`);
     }

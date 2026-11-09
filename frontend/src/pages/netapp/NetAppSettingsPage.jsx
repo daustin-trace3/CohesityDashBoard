@@ -5,6 +5,8 @@ import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, LoadingPanel, Badge, RefreshButton } from '../../components/ui/primitives';
 import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
+import { RetentionPanel } from '../../components/settings/RetentionControls';
+import { Database } from 'lucide-react';
 import { BRAND } from './helpers';
 import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 
@@ -13,6 +15,7 @@ const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg 
 const TABS = [
   { key: 'aiqum', label: 'AIQUM (Unified Manager)', icon: Cloud },
   { key: 'direct', label: 'Direct Clusters', icon: Server },
+  { key: 'retention', label: 'Data retention', icon: Database },
   { key: 'alerts', label: 'Alert Notifications', icon: BellRing },
 ];
 
@@ -224,6 +227,7 @@ export default function NetAppSettingsPage() {
       </PageHeader>
 
       <PlatformSettingsLayout brand={BRAND} label="NetApp" sections={TABS} active={tab} onSelect={setTab}>
+      {tab === 'retention' && <RetentionPanel platform="netapp" />}
 
       {tab === 'aiqum' && (
         <>

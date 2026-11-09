@@ -38,6 +38,7 @@ const opsAgentRouter = require('./routes/opsAgent');
 const estateRouter = require('./routes/estate');
 const appServicesRouter = require('./routes/appServices');
 const alertNotifyRouter = require('./routes/alertNotify');
+const retentionRouter = require('./routes/retention');
 const authRouter = require('./routes/auth');
 const usersRouter = require('./routes/users');
 const directoryRouter = require('./routes/directory');
@@ -230,6 +231,7 @@ function createApp({ licenseGate = requireLicense } = {}) {
   // Settings page already needs). Must mount before the plugin dispatcher
   // below, which would otherwise try to resolve "alert-notify" as a pluginId.
   app.use('/api/alert-notify', alertNotifyRouter);
+  app.use('/api/retention', retentionRouter);
   // Plugins router applies permissions per-route itself (admin:plugins:view|
   // manage for most routes, the plugin's own namespace for bundle.js, no
   // gate for frontend-manifest) — no blanket guard here.

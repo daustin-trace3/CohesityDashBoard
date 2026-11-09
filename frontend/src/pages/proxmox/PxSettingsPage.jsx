@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Search, X, SlidersHorizontal } from 'lucide-react';
+import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Search, X, SlidersHorizontal, Database } from 'lucide-react';
+import { RetentionPanel } from '../../components/settings/RetentionControls';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
@@ -217,6 +218,7 @@ export default function PxSettingsPage() {
     { key: 'sources', label: 'Servers', icon: Server },
     { key: 'thresholds', label: 'Alert Thresholds', icon: SlidersHorizontal },
     { key: 'notify', label: 'Alert Notifications', icon: BellRing },
+    { key: 'retention', label: 'Data retention', icon: Database },
   ];
 
   return (
@@ -330,6 +332,7 @@ export default function PxSettingsPage() {
       </>)}
 
       {section === 'notify' && <PlatformAlertNotifications platform="proxmox" label="Proxmox VE" />}
+      {section === 'retention' && <RetentionPanel platform="proxmox" />}
 
       {section === 'sources' && (<>
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>

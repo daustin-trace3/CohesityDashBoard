@@ -5,6 +5,7 @@ import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
 import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
+import { RetentionPanel } from '../../components/settings/RetentionControls';
 import { BRAND, fmtWhen } from './helpers';
 import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 import { SettingRow, SettingGroup, TabSaveBar, numberCls } from '../../components/settings/SettingRow';
@@ -362,6 +363,7 @@ export default function AriaSettingsPage() {
 
       </>)}
       {section === 'retention' && (<>
+        <div className="mb-4"><RetentionPanel platform="aria" /></div>
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Database size={15} className="text-brand" /> Data retention</p>
         <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">

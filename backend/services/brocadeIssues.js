@@ -15,14 +15,12 @@ const healthWarnScore = () => clampedInt('brocade_health_warn_score', 70, 1, 100
 const healthCritScore = () => clampedInt('brocade_health_crit_score', 50, 1, 100);
 const certWarnDays = () => clampedInt('brocade_cert_warn_days', 60, 1, 365);
 const eventStormCount = () => clampedInt('brocade_event_storm_count', 10, 1, 1000);
-const eventRetentionDays = () => clampedInt('brocade_event_retention_days', 30, 1, 365);
 
 const thresholdGetters = {
   brocadeHealthWarnScore: healthWarnScore,
   brocadeHealthCritScore: healthCritScore,
   brocadeCertWarnDays: certWarnDays,
   brocadeEventStormCount: eventStormCount,
-  brocadeEventRetentionDays: eventRetentionDays,
 };
 
 // management_state bitmask (AdditionalSwitchInfo, int64) — the bits relevant
@@ -292,7 +290,7 @@ const reconcileIssueHistoryTxn = db.transaction(() => {
 const reconcileIssueHistory = () => reconcileIssueHistoryTxn.immediate();
 
 module.exports = {
-  healthWarnScore, healthCritScore, certWarnDays, eventStormCount, eventRetentionDays,
+  healthWarnScore, healthCritScore, certWarnDays, eventStormCount,
   thresholdGetters,
   decodeMgmtState,
   computeIssues,

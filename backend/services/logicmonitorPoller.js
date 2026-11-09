@@ -10,6 +10,7 @@
 // section runs through trySection; a poll where EVERY section fails marks the
 // source error and throws (Cohesity resilience rule, 2026-09-28).
 const { pruneInBatches } = require('../core/dbPrune');
+const retention = require('../core/retention');
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const lmApi = require('./logicmonitorApi');
@@ -1004,18 +1005,16 @@ function computeInterfaceBaselines(dbh, sourceId, nowMs = Date.now()) {
 function pruneHistories(sourceId) {
   const ifDays = getThreshold('lm_interface_history_days');
   const ckDays = getThreshold('lm_check_history_days');
-  const alertDays = getThreshold('lm_alert_retention_days');
   pruneInBatches(db, 'lm_interface_history', "source_id = ? AND captured_at < datetime('now', ?)", [sourceId, `-${ifDays} days`]);
   pruneInBatches(db, 'lm_check_history', "source_id = ? AND captured_at < datetime('now', ?)", [sourceId, `-${ckDays} days`]);
-  pruneInBatches(db, 'lm_alerts', 'source_id = ? AND cleared = 1 AND COALESCE(end_epoch, start_epoch, 0) < ?', [sourceId, nowSec() - alertDays * 86400]);
-  const dailyDays = getThreshold('lm_daily_history_days');
-  pruneInBatches(db, 'lm_metrics_history', "source_id = ? AND captured_at < datetime('now', ?)", [sourceId, `-${dailyDays} days`]);
-  pruneInBatches(db, 'lm_ds_daily', "source_id = ? AND day < date('now', ?)", [sourceId, `-${dailyDays} days`]);
-  pruneInBatches(db, 'lm_device_daily', "source_id = ? AND day < date('now', ?)", [sourceId, `-${dailyDays} days`]);
+  retention.prune(db, { platform: 'logicmonitor', bucket: 'events', table: 'lm_alerts', column: 'COALESCE(end_epoch, start_epoch, 0)', kind: 'epoch_s', where: 'source_id = ? AND cleared = 1', params: [sourceId] });
+  retention.prune(db, { platform: 'logicmonitor', bucket: 'trending', table: 'lm_metrics_history', column: 'captured_at', where: 'source_id = ?', params: [sourceId] });
+  retention.prune(db, { platform: 'logicmonitor', bucket: 'trending', table: 'lm_ds_daily', column: 'day', kind: 'date', where: 'source_id = ?', params: [sourceId] });
+  retention.prune(db, { platform: 'logicmonitor', bucket: 'trending', table: 'lm_device_daily', column: 'day', kind: 'date', where: 'source_id = ?', params: [sourceId] });
   pruneInBatches(db, 'lm_webhook_events', "source_id = ? AND received_at < datetime('now', '-7 days')", [sourceId]);
-  pruneInBatches(db, 'lm_blame_history', "source_id = ? AND at < datetime('now', '-90 days')", [sourceId]);
-  pruneInBatches(db, 'lm_interface_daily', "source_id = ? AND day < date('now', '-400 days')", [sourceId]);
-  pruneInBatches(db, 'lm_check_daily', "source_id = ? AND day < date('now', '-400 days')", [sourceId]);
+  retention.prune(db, { platform: 'logicmonitor', bucket: 'events', table: 'lm_blame_history', column: 'at', where: 'source_id = ?', params: [sourceId] });
+  retention.prune(db, { platform: 'logicmonitor', bucket: 'trending', table: 'lm_interface_daily', column: 'day', kind: 'date', where: 'source_id = ?', params: [sourceId] });
+  retention.prune(db, { platform: 'logicmonitor', bucket: 'trending', table: 'lm_check_daily', column: 'day', kind: 'date', where: 'source_id = ?', params: [sourceId] });
 }
 
 function recordLedger(source) {

@@ -179,20 +179,14 @@ describe('vCenter history routes', () => {
     expect(by['ds-none'].trendBasisDays).toBe(0);
   });
 
-  it('config: retention keys round trip with defaults and reject out-of-range values', async () => {
+  it('config: retention moved to Data retention, old keys answer 400', async () => {
     const first = await get('/config');
-    expect(first.body).toMatchObject({
-      vmHistoryDays: 90, hostHistoryDays: 90, clusterHistoryDays: 365, datastoreHistoryDays: 365, dailyHistoryDays: 730, eventRetentionDays: 90,
-    });
-    const put = await request(app).put('/api/vcenter/config').send({ vmHistoryDays: 120, dailyHistoryDays: 1000, eventRetentionDays: 14 });
-    expect(put.status).toBe(200);
-    expect(put.body).toMatchObject({ saved: true, vmHistoryDays: 120, dailyHistoryDays: 1000, eventRetentionDays: 14, hostHistoryDays: 90 });
-    expect((await get('/config')).body).toMatchObject({ vmHistoryDays: 120, dailyHistoryDays: 1000, eventRetentionDays: 14 });
-    for (const bad of [{ vmHistoryDays: 10 }, { vmHistoryDays: 400 }, { clusterHistoryDays: 50 }, { eventRetentionDays: 2 }, { dailyHistoryDays: 2000 }]) {
-      expect((await request(app).put('/api/vcenter/config').send(bad)).status).toBe(400);
+    expect(first.body.vmHistoryDays).toBeUndefined();
+    expect(first.body).toMatchObject({ certWarnDays: 60, guestDiskWarnPct: 80 });
+    for (const bad of [{ vmHistoryDays: 120 }, { dailyHistoryDays: 1000 }, { eventRetentionDays: 14 }]) {
+      const r = await request(app).put('/api/vcenter/config').send(bad);
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/Data retention/);
     }
-    // thresholds are untouched by a retention save
-    expect((await get('/config')).body).toMatchObject({ certWarnDays: 60, guestDiskWarnPct: 80 });
-    db.prepare("DELETE FROM app_settings WHERE key LIKE 'vcenter_%_days'").run();
   });
 });

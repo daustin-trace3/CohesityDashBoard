@@ -3163,6 +3163,9 @@ router.put('/config', (req, res, next) => {
     const src = req.body && typeof req.body.thresholds === 'object' && req.body.thresholds ? req.body.thresholds : (req.body || {});
     const bad = [];
     const writes = [];
+    for (const key of ['lm_alert_retention_days', 'lm_daily_history_days']) {
+      if (src[key] !== undefined) bad.push({ path: key, msg: 'Retention moved to Data retention (Settings > Data retention, or Global Settings > Platforms).' });
+    }
     for (const [key, d] of Object.entries(defs())) {
       if (src[key] === undefined) continue;
       const v = src[key];

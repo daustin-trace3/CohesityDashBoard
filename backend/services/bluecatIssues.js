@@ -1,7 +1,7 @@
 // Computed BlueCat issues (shared by routes and the poller) plus their
 // lifecycle history — unifiIssues.js model exactly. Issue identity is
 // `type|source|target`.
-const { pruneInBatches } = require('../core/dbPrune');
+const retention = require('../core/retention');
 const db = require('../db/database');
 const { getSetting } = require('./settings');
 
@@ -133,7 +133,7 @@ const reconcileIssueHistoryTxn = db.transaction(() => {
 // BEGIN IMMEDIATE, same rationale as unifiIssues.js.
 const reconcileIssueHistory = () => {
   const out = reconcileIssueHistoryTxn.immediate();
-  pruneInBatches(db, 'bluecat_issue_history', "status = 'resolved' AND resolved_at < datetime('now', '-90 days')");
+  retention.prune(db, { platform: 'bluecat', bucket: 'events', table: 'bluecat_issue_history', column: 'resolved_at', where: "status = 'resolved'" });
   return out;
 };
 

@@ -767,4 +767,11 @@ module.exports = [
       `);
     },
   },
+  // Data retention buckets: fold legacy per-table retention keys into platform overrides.
+  {
+    version: 35, // feat/multi-tenant numbers this v36
+    up(db) {
+      require('../../core/retention').migrateLegacy(db);
+    },
+  },
 ];

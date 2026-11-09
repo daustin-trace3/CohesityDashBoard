@@ -6,6 +6,8 @@ import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
 import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
+import { RetentionPanel } from '../../components/settings/RetentionControls';
+import { Database } from 'lucide-react';
 import { BRAND, fmtWhen } from './helpers';
 import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 
@@ -17,6 +19,7 @@ const iconBtn = 'flex items-center justify-center h-7 w-7 rounded-md border bord
 const SECTIONS = [
   { key: 'sources', label: 'Address Managers', icon: Server, group: 'Connections' },
   { key: 'thresholds', label: 'Alert Thresholds', icon: BellRing, group: 'Tuning' },
+  { key: 'retention', label: 'Data retention', icon: Database, group: 'Tuning' },
   { key: 'notify', label: 'Alert Notifications', icon: BellRing, group: 'Tuning' },
 ];
 
@@ -232,6 +235,7 @@ export default function BluecatSettingsPage() {
       <PageHeader icon={Settings} title="BlueCat Settings" description="Register BlueCat Address Managers and tune alert thresholds" />
 
       <PlatformSettingsLayout brand={BRAND} label="BlueCat" sections={SECTIONS} active={section} onSelect={setSection}>
+      {section === 'retention' && <RetentionPanel platform="bluecat" />}
         <div>
           {section === 'sources' && (
             <>

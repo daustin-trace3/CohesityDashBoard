@@ -4,6 +4,7 @@
 // hosts (appliances) and alerts, replaces the inventory tables for that
 // source and appends a metrics snapshot.
 const { pruneInBatches } = require('../core/dbPrune');
+const retention = require('../core/retention');
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const netbackupApi = require('./netbackupApi');
@@ -171,8 +172,8 @@ async function pollSource(source) {
     const data = await collect(source);
     store(source.id, data);
     pruneInBatches(db, 'netbackup_jobs', "source_id = ? AND started_at IS NOT NULL AND started_at < datetime('now', '-30 days')", [source.id]);
-    pruneInBatches(db, 'netbackup_workload_history', "captured_at < datetime('now', '-400 days')");
-    pruneInBatches(db, 'netbackup_metrics_history', "captured_at < datetime('now', '-365 days')");
+    retention.prune(db, { platform: 'netbackup', bucket: 'trending', table: 'netbackup_workload_history', column: 'captured_at' });
+    retention.prune(db, { platform: 'netbackup', bucket: 'trending', table: 'netbackup_metrics_history', column: 'captured_at' });
     db.prepare(`
       UPDATE netbackup_sources SET last_poll_status = 'success', last_poll_error = NULL,
         last_poll_at = datetime('now') WHERE id = ?

@@ -16,7 +16,7 @@
 // history and the AWS Service Health RSS feeds are unaffected (regional /
 // estate-wide respectively) and run for every account (health is additionally
 // module-level throttled to once per 15 minutes regardless of account count).
-const { pruneInBatches } = require('../core/dbPrune');
+const retention = require('../core/retention');
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const { mapLimit, valuesOrThrow, callsInFlight } = require('../core/concurrency');
@@ -161,7 +161,7 @@ const upsertCostResource = db.transaction((accountId, rows) => {
     ON CONFLICT(account_id, day, service, resource_id) DO UPDATE SET amount_usd = excluded.amount_usd
   `);
   for (const r of rows) stmt.run(accountId, r.day, r.service, r.resourceId, r.amountUsd);
-  db.prepare("DELETE FROM aws_cost_resource_daily WHERE day < date('now', '-90 days')").run();
+  retention.prune(db, { platform: 'aws', bucket: 'trending', table: 'aws_cost_resource_daily', column: 'day', kind: 'date' });
 });
 
 const upsertCostResourceUsage = db.transaction((accountId, rows) => {
@@ -171,7 +171,7 @@ const upsertCostResourceUsage = db.transaction((accountId, rows) => {
     ON CONFLICT(account_id, day, usage_type, resource_id) DO UPDATE SET amount_usd = excluded.amount_usd
   `);
   for (const r of rows) stmt.run(accountId, r.day, r.usageType, r.resourceId, r.amountUsd);
-  db.prepare("DELETE FROM aws_cost_resource_usage_daily WHERE day < date('now', '-90 days')").run();
+  retention.prune(db, { platform: 'aws', bucket: 'trending', table: 'aws_cost_resource_usage_daily', column: 'day', kind: 'date' });
 });
 
 const upsertCostInstanceType = db.transaction((accountId, rows) => {
@@ -220,7 +220,7 @@ async function maybeCollectHealth() {
       }
     }
   }
-  pruneInBatches(db, 'aws_health_events', "fetched_at < datetime('now', '-90 days')");
+  retention.prune(db, { platform: 'aws', bucket: 'events', table: 'aws_health_events', column: 'fetched_at' });
 }
 
 async function collectEc2(account) {
@@ -1115,7 +1115,7 @@ function appendMetricsHistory(accountId, { ec2, lightsail, ecs, s3Rows }) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(accountId, ec2Running, ec2Stopped, ec2Alarmed, lightsailRunning,
     ecs.services.length, ecsDegraded, s3TotalBytes || null, (s3Rows || []).length || null, mtd?.s ?? null);
-  pruneInBatches(db, 'aws_metrics_history', "account_id = ? AND captured_at < datetime('now', '-365 days')", [accountId]);
+  retention.prune(db, { platform: 'aws', bucket: 'trending', table: 'aws_metrics_history', column: 'captured_at', where: 'account_id = ?', params: [accountId] });
 }
 
 /**
@@ -1205,7 +1205,7 @@ async function pollAccount(account) {
     storeCore(account.id, { ec2, lightsail, ecs, lightsailInventory });
     try {
       upsertEc2CpuDaily(account.id, ec2.instances, new Date().toISOString().slice(0, 10));
-      pruneInBatches(db, 'aws_ec2_metrics_daily', 'day < ?', [new Date(Date.now() - 400 * 86400000).toISOString().slice(0, 10)]);
+      retention.prune(db, { platform: 'aws', bucket: 'trending', table: 'aws_ec2_metrics_daily', column: 'day', kind: 'date' });
       refreshInventoryTagKeysSeen();
     } catch (err) {
       logger.warn(`[AwsPoller] ${account.name}: EC2 CPU history or tag keys failed: ${safeMsg(err)}`);
@@ -1222,7 +1222,7 @@ async function pollAccount(account) {
     try { refreshInventoryTagKeysSeen(); } catch (err) { logger.warn(`[AwsPoller] ${account.name}: tag keys failed: ${safeMsg(err)}`); }
 
     upsertRdsStorageHistory(account.id, rds);
-    pruneInBatches(db, 'aws_rds_storage_history', "account_id = ? AND day < date('now', '-365 days')", [account.id]);
+    retention.prune(db, { platform: 'aws', bucket: 'trending', table: 'aws_rds_storage_history', column: 'day', kind: 'date', where: 'account_id = ?', params: [account.id] });
 
     try {
       const bedrock = await collectBedrock(account);
@@ -1271,7 +1271,7 @@ async function pollAccount(account) {
         s3Rows = db.prepare('SELECT size_bytes FROM aws_s3_buckets WHERE account_id = ?').all(account.id)
           .map((r) => ({ sizeBytes: r.size_bytes }));
       }
-      db.prepare("DELETE FROM aws_s3_size_history WHERE account_id = ? AND day < date('now', '-365 days')").run(account.id);
+      retention.prune(db, { platform: 'aws', bucket: 'trending', table: 'aws_s3_size_history', column: 'day', kind: 'date', where: 'account_id = ?', params: [account.id] });
 
       // FinOps block (forecast, commitments, anomalies, allocation, budgets, recommendations):
       // one daily stamp for the whole block, each capability degrades on its own inside it.

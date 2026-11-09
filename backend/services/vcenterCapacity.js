@@ -2,32 +2,13 @@
 // tables), N+1 usable math, site rollups, the failover matrix, and the hourly
 // history sampler. Pure math functions take/return plain camelCase objects so
 // they are unit-testable without a DB.
-const { pruneInBatches } = require('../core/dbPrune');
+const retention = require('../core/retention');
 const db = require('../db/database');
 const { getSetting } = require('./settings');
 
 const SAMPLE_GAP_MINUTES = 55;
 
-// Retention windows (days) are settings: name -> [setting key, default, min, max].
-// A never saved or non-numeric value returns the default; others clamp into range.
-const RETENTION_DEFS = {
-  vmHistoryDays: ['vcenter_vm_history_days', 90, 30, 365],
-  hostHistoryDays: ['vcenter_host_history_days', 90, 30, 365],
-  clusterHistoryDays: ['vcenter_cluster_history_days', 365, 90, 1095],
-  datastoreHistoryDays: ['vcenter_datastore_history_days', 365, 30, 1095],
-  dailyHistoryDays: ['vcenter_daily_history_days', 730, 90, 1095],
-  eventRetentionDays: ['vcenter_event_retention_days', 90, 7, 365],
-};
-
-function retentionDays() {
-  const out = {};
-  for (const [name, [key, dflt, min, max]] of Object.entries(RETENTION_DEFS)) {
-    const raw = getSetting(key);
-    const n = raw == null || raw === '' ? NaN : Number(raw);
-    out[name] = Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : dflt;
-  }
-  return out;
-}
+// Retention windows follow the Data retention buckets (core/retention.js, platform 'vcenter').
 
 /** N+1 usable = cluster capacity minus its largest host (0 for single-host clusters). */
 function n1Usable(cluster) {
@@ -291,14 +272,11 @@ function writeCapacitySample(vcId, { force = false } = {}) {
     return { clusters: clusters.length, vms: vmInfo.changes, hosts: hostInfo.changes, datastores: dsInfo.changes };
   });
   const out = run();
-  const r = retentionDays();
-  const byAge = (table, days) => pruneInBatches(db, table, "vcenter_id = ? AND captured_at < datetime('now', ?)", [vcId, `-${days} days`]);
-  byAge('vcenter_capacity_history', r.clusterHistoryDays);
-  byAge('vcenter_vm_capacity_history', r.vmHistoryDays);
-  byAge('vcenter_host_capacity_history', r.hostHistoryDays);
-  byAge('vcenter_datastore_history', r.datastoreHistoryDays);
+  for (const t of ['vcenter_capacity_history', 'vcenter_vm_capacity_history', 'vcenter_host_capacity_history', 'vcenter_datastore_history']) {
+    retention.prune(db, { platform: 'vcenter', bucket: 'trending', table: t, column: 'captured_at', where: 'vcenter_id = ?', params: [vcId] });
+  }
   for (const t of ['vcenter_vm_daily', 'vcenter_host_daily']) {
-    pruneInBatches(db, t, "vcenter_id = ? AND day < date('now', ?)", [vcId, `-${r.dailyHistoryDays} days`]);
+    retention.prune(db, { platform: 'vcenter', bucket: 'trending', table: t, column: 'day', kind: 'date', where: 'vcenter_id = ?', params: [vcId] });
   }
   return { sampled: true, ...out };
 }
@@ -408,7 +386,7 @@ function ensureDefaultSites() {
 }
 
 module.exports = {
-  SAMPLE_GAP_MINUTES, RETENTION_DEFS, retentionDays,
+  SAMPLE_GAP_MINUTES,
   n1Usable, rollupSite, failoverMatrix, siteMap, clusterStats, writeCapacitySample, bucketHistory, growthOf,
   autoCreateSites, ensureDefaultSites, pairSummary,
 };

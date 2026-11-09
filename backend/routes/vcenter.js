@@ -17,7 +17,7 @@ const guestStorage = require('../services/vcenterGuestStorage');
 const guestOs = require('../services/vcenterGuestOs');
 const vcGroups = require('../services/vcenterGroups');
 const vcenterAdvisor = require('../services/advisors/vcenterAdvisor');
-const { RETENTION_DEFS, retentionDays, writeCapacitySample, n1Usable, rollupSite, failoverMatrix, siteMap, clusterStats, bucketHistory, growthOf, autoCreateSites, pairSummary } = require('../services/vcenterCapacity');
+const { writeCapacitySample, n1Usable, rollupSite, failoverMatrix, siteMap, clusterStats, bucketHistory, growthOf, autoCreateSites, pairSummary } = require('../services/vcenterCapacity');
 
 const router = express.Router();
 
@@ -269,7 +269,7 @@ const obsThresholdsOut = () => {
 
 const configOut = () => {
   const gd = guestDiskThresholds();
-  return { certWarnDays: certWarnDays(), guestDiskWarnPct: gd.warn, guestDiskCritPct: gd.crit, ...obsThresholdsOut(), ...retentionDays() };
+  return { certWarnDays: certWarnDays(), guestDiskWarnPct: gd.warn, guestDiskCritPct: gd.crit, ...obsThresholdsOut() };
 };
 
 router.get('/config', (req, res, next) => {
@@ -283,11 +283,13 @@ router.put('/config', [
   body('certWarnDays').optional().isInt({ min: 1, max: 365 }).toInt(),
   body('guestDiskWarnPct').optional().isInt({ min: 1, max: 100 }).toInt(),
   body('guestDiskCritPct').optional().isInt({ min: 1, max: 100 }).toInt(),
-  ...Object.entries(RETENTION_DEFS).map(([name, [, , min, max]]) => body(name).optional().isInt({ min, max }).toInt()),
   ...Object.entries(OBS_THRESHOLDS).map(([name, [group]]) => body(name).optional().isInt({ min: 1, max: obsThresholds.KEYS[group].max }).toInt()),
 ], validate, (req, res, next) => {
   try {
     const b = req.body;
+    for (const name of ['vmHistoryDays', 'hostHistoryDays', 'clusterHistoryDays', 'datastoreHistoryDays', 'dailyHistoryDays', 'eventRetentionDays']) {
+      if (b[name] !== undefined) return res.status(400).json({ error: 'Retention moved to Data retention (Settings > Data retention, or Global Settings > Platforms).', field: name });
+    }
     // Check crit >= warn against the values that will be in force BEFORE saving.
     const cur = obsThresholdsOut();
     for (const group of ['vmCpu', 'vmMem', 'hostCpu', 'hostMem']) {
@@ -299,9 +301,6 @@ router.put('/config', [
     }
     for (const [name, [group, which]] of Object.entries(OBS_THRESHOLDS)) {
       if (b[name] != null) setSetting(obsThresholds.KEYS[group][`${which}Key`], String(b[name]));
-    }
-    for (const [name, [key]] of Object.entries(RETENTION_DEFS)) {
-      if (b[name] != null) setSetting(key, String(b[name]));
     }
     if (b.certWarnDays != null) setSetting('vcenter_cert_warn_days', String(b.certWarnDays));
     if (b.guestDiskWarnPct != null) setSetting('vcenter_guest_disk_warn_pct', String(b.guestDiskWarnPct));

@@ -4,6 +4,8 @@ import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
 import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
+import { RetentionPanel } from '../../components/settings/RetentionControls';
+import { Database } from 'lucide-react';
 import { BRAND, fmtWhen } from './helpers';
 import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 
@@ -252,6 +254,7 @@ export default function ZertoSettingsPage() {
 
   const SECTIONS = [
     { key: 'connection', label: 'Connection', icon: Cloud },
+    { key: 'retention', label: 'Data retention', icon: Database },
     { key: 'alerts', label: 'Alert Notifications', icon: BellRing },
   ];
 
@@ -263,6 +266,7 @@ export default function ZertoSettingsPage() {
         <LoadingPanel label="Loading…" height={140} />
       ) : (
         <PlatformSettingsLayout brand={BRAND} label="Zerto" sections={SECTIONS} active={tab} onSelect={setTab}>
+      {tab === 'retention' && <RetentionPanel platform="zerto" />}
 
           <div className="flex-1 min-w-0 flex flex-col gap-4">
           {tab === 'alerts' ? (

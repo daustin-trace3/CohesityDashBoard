@@ -21,6 +21,7 @@
 // the same applySample state machine exported from here. evaluateWatch calls
 // it at the end of a full (not 'only') pass through a guarded require.
 const { pruneInBatches } = require('../core/dbPrune');
+const retention = require('../core/retention');
 const lmChecks = require('./logicmonitorChecks');
 
 const { median } = lmChecks;
@@ -709,7 +710,10 @@ function watchLines(dbh, opts = {}) {
 }
 
 /** Closed episodes older than `days` days. Returns the number removed. */
-function pruneEpisodes(dbh, days = 90) {
+function pruneEpisodes(dbh, days) {
+  if (days == null) {
+    return retention.prune(dbh, { platform: 'logicmonitor', bucket: 'events', table: 'lm_latency_episodes', column: 'closed_at', kind: 'iso', where: "state = 'closed'" }).deleted;
+  }
   const cutoff = isoOf(nowSec() - days * 86400);
   return pruneInBatches(dbh, 'lm_latency_episodes', "state = 'closed' AND closed_at < ?", [cutoff]).deleted;
 }

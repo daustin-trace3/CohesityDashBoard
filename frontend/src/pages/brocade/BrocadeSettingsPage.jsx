@@ -7,6 +7,8 @@ import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
 import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
+import { RetentionPanel } from '../../components/settings/RetentionControls';
+import { Database } from 'lucide-react';
 import { BRAND, fmtWhen } from './helpers';
 import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 
@@ -18,6 +20,7 @@ const iconBtn = 'flex items-center justify-center h-7 w-7 rounded-md border bord
 const SECTIONS = [
   { key: 'sources', label: 'SANnav Servers', icon: Server, group: 'Connections' },
   { key: 'thresholds', label: 'Alert Thresholds', icon: BellRing, group: 'Tuning' },
+  { key: 'retention', label: 'Data retention', icon: Database, group: 'Tuning' },
   { key: 'notify', label: 'Alert Notifications', icon: BellRing, group: 'Tuning' },
 ];
 
@@ -26,7 +29,6 @@ const THRESHOLD_FIELDS = [
   { key: 'healthCritScore', label: 'Health score critical (below)', min: 1, max: 100 },
   { key: 'certWarnDays', label: 'Certificate expiry warn (days)', min: 1, max: 365 },
   { key: 'eventStormCount', label: 'Event storm threshold (per hour)', min: 1, max: 1000 },
-  { key: 'eventRetentionDays', label: 'Event retention (days)', min: 1, max: 365 },
   { key: 'portStatsRetentionDays', label: 'Port stats retention (days)', min: 1, max: 90 },
 ];
 
@@ -440,6 +442,7 @@ export default function BrocadeSettingsPage() {
       <PageHeader icon={Settings} title="Brocade SAN Settings" description="Register SANnav Management Portal servers and tune alert thresholds" />
 
       <PlatformSettingsLayout brand={BRAND} label="Brocade" sections={SECTIONS} active={section} onSelect={setSection}>
+      {section === 'retention' && <RetentionPanel platform="brocade" />}
         <div>
           {section === 'sources' && (
             <>
