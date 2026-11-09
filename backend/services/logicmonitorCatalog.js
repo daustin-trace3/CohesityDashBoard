@@ -52,7 +52,7 @@ const exact = (name) => (Array.isArray(name) ? name.map((n) => `^${n}$`) : `^${n
 // Bump whenever a regex below changes. pollMetrics drops every learned
 // dsColumns/dsUnmatched map when a source's stored catalogVersion differs, so
 // the next poll relearns with the corrected matchers.
-const CATALOG_VERSION = 7; // 7: F5 custom service status DataSources are exit codes (daemon_exit, 0 = running); 6: 6: exact ISE, Zscaler ZPA and SBC picks (mem_used_percent, TotalUtilization, utilizationPercent); 5: round 12 exact Palo Alto picks (cpu_pct_used, mem_pct_used, cur_temp, alarms), Ping, Cisco_NTP, F5 memory and interfaces; 4: F5_BigIP_System memory percent is MemoryUsage (MemoryUsed is bytes); 3: round 11 families
+const CATALOG_VERSION = 8; // 8: exact fixture picks (F5 client byte rates, GTM wide IP resolutions, BGP and OSPF restarts, uptime boot count, Nexus FRU power draw), no regex pick without a live datapoint; 7: F5 custom service status DataSources are exit codes (daemon_exit, 0 = running); 6: 6: exact ISE, Zscaler ZPA and SBC picks (mem_used_percent, TotalUtilization, utilizationPercent); 5: round 12 exact Palo Alto picks (cpu_pct_used, mem_pct_used, cur_temp, alarms), Ping, Cisco_NTP, F5 memory and interfaces; 4: F5_BigIP_System memory percent is MemoryUsage (MemoryUsed is bytes); 3: round 11 families
 
 const CATALOG = [];
 const add = (family, match, label, metrics, opts = {}) => {
@@ -220,13 +220,19 @@ add('loadbalancer', 'F5_BigIP_System', 'F5 system', {
   mem_total_bytes: gauge(exact('MemoryTotal'), 'B', 'Memory total'),
   client_connections: gauge(exact('ClientCurrentConnections'), 'conns', 'Client connections'),
   server_connections: gauge([exact('ServerCurrentConncections'), exact('ServerCurrentConnections')], 'conns', 'Server connections'),
-  throughput_bps: gauge(['throughput', 'bits', 'bps'], 'bps', 'Throughput'),
+  // Fixture (2026-10-16): F5_BigIP_System has NO throughput datapoint. The client byte rates are the nearest
+  // exact names; throughput is derived as (client_bytes_in + client_bytes_out) * 8 by whoever needs it. Unit
+  // (bytes per second or a running total) UNVERIFIED.
+  client_bytes_in: gauge(exact('ClientBytesIn'), 'B/s', 'Client bytes in'),
+  client_bytes_out: gauge(exact('ClientBytesOut'), 'B/s', 'Client bytes out'),
 }, { history: true });
 
 add('loadbalancer', 'F5_BigIP_FailoverStatus', 'F5 failover', {
   // LM enum (UNVERIFIED): 0 unknown, 1 offline, 2 forced offline, 3 standby, 4 active.
   // Live names: FailoverStatus (the number), FailoverColor and FailoverColorAlert are display helpers.
   failover_state: state(exact('FailoverStatus'), 'Failover state'),
+  // Fixture: this DataSource has no sync datapoint (FailoverColor, FailoverColorAlert, FailoverStatus only), so
+  // sync_state stays unmatched on this portal; the regex is kept for portals that carry one.
   sync_state: state(['sync'], 'Sync state'),
 });
 
@@ -242,6 +248,7 @@ add('loadbalancer', 'F5_BigIP_PoolMemberStats', 'F5 pool members', {
 add('loadbalancer', 'F5_GTM_WideIP-', 'F5 GTM wide IPs', {
   wideip_avail: state(exact('AvailStatus'), 'Wide IP available'),
   wideip_requests: counter(exact('RequestsTotal'), 'req', 'Requests'),
+  wideip_resolutions: counter(exact('ResolutionsTotal'), 'res', 'Resolutions'),
 }, { maxInstances: 5000 });
 
 add('loadbalancer', 'F5_GTM_VIPs-', 'F5 GTM VIPs', {
@@ -338,7 +345,13 @@ add('health', 'NetSNMP_Memory_Usage', 'Net-SNMP memory', {
 }, { history: true });
 
 add('health', 'Cisco_FRU_Power', 'Cisco FRU power', { psu_state: state(exact('OperatingStatus'), 'PSU state') }, { maxInstances: 5000 });
-add('health', 'Cisco_Nexus_FRU_Power', 'Cisco Nexus FRU power', { psu_state: state(['status', 'state', 'oper'], 'PSU state') });
+// Fixture: Cisco_Nexus_FRU_Power has no state datapoint (AlertCurrent, AlertThreshold, AvailableCurrent, AvailablePct,
+// CurrentDraw, NormalAvailableCurrent), so psu_state never matches here; the exact picks below are what it offers.
+add('health', 'Cisco_Nexus_FRU_Power', 'Cisco Nexus FRU power', {
+  psu_state: state(['status', 'state', 'oper'], 'PSU state'),
+  psu_avail_pct: pct(exact('AvailablePct'), 'Power available'),
+  psu_draw: gauge(exact('CurrentDraw'), '', 'Current draw'),
+});
 add('health', 'Cisco_System_PowerSupplies', 'Cisco power supplies', { psu_state: state(['status', 'state', 'oper'], 'PSU state') });
 add('health', 'CiscoFan-', 'Cisco fans', { fan_state: state(['status', 'state', 'oper'], 'Fan state') });
 add('health', 'Cisco_TemperatureSensors', 'Cisco temperature sensors', {
@@ -387,7 +400,10 @@ add('health', 'SNMP_Filesystem_Usage', 'SNMP filesystem usage', {
   fs_total_bytes: gauge(['total', 'size', 'capacity'], 'bytes', 'Total'),
   fs_free_bytes: gauge(['free', 'avail'], 'bytes', 'Free'),
 }, { history: true, maxInstances: 400 });
-add('health', 'SNMP_Host_Uptime', 'SNMP host uptime', { uptime_s: gauge(exact('Uptime'), 's', 'Uptime') });
+add('health', 'SNMP_Host_Uptime', 'SNMP host uptime', {
+  uptime_s: gauge(exact('Uptime'), 's', 'Uptime'),
+  boot_count: gauge(exact('EngineBootCount'), '', 'SNMP engine boot count'),
+});
 
 // -- Optics ----------------------------------------------------------------------
 
@@ -400,6 +416,7 @@ add('optics', 'Cisco_Transceiver_Sensors', 'Cisco transceivers', {
   optic_low_warn: gauge(exact('low_warning'), '', 'Low warning'),
   optic_high_warn: gauge(exact('high_warning'), '', 'High warning'),
   optic_low_alarm: gauge(exact('low_alarm'), '', 'Low alarm'),
+  optic_high_alarm: gauge(exact('high_alarm'), '', 'High alarm'),
   optic_state: state(exact('sensor_status'), 'Sensor status'),
   optic_if_state: state(exact('sensor_parent_interface_status'), 'Parent interface status'),
   rx_power_dbm: gauge(['rx.?power', 'receive.*power', 'rx', 'receive'], 'dBm', 'Rx power'),
@@ -418,11 +435,15 @@ add('routing', 'BGP-', 'BGP peers', {
   // RFC 4273 bgpPeerState: 6 = established.
   bgp_peer_state: state(exact('PeerState'), 'BGP peer state'),
   bgp_established_s: gauge(exact('EstablishedTime'), 's', 'Established time'),
+  // Fixture: BGP- has no prefix datapoint (EstablishedTime, PeerAdminStatus, PeerInUpdates, PeerOutUpdates, PeerRestart,
+  // PeerState), so prefix counts are not collected on this portal.
   bgp_prefixes_in: gauge(['prefix', 'received', 'accepted'], 'prefixes', 'Prefixes in'),
+  bgp_restarts: counter(exact('PeerRestart'), 'restarts', 'Peer restarts'),
 });
 add('routing', 'OSPF_Neighbors', 'OSPF neighbours', {
   // OSPF-MIB ospfNbrState: 8 = full.
   ospf_nbr_state: state(exact('peerState'), 'OSPF neighbour state'),
+  ospf_nbr_restarts: counter(exact('NeighborRestart'), 'restarts', 'Neighbour restarts'),
 });
 add('routing', 'Cisco_EIGRP_Peers', 'EIGRP peers', { eigrp_uptime_s: gauge(['uptime', 'up.?time'], 's', 'Peer uptime') });
 add('routing', 'ntm_CX_BGP', 'Cisco CX BGP', { bgp_peer_state: state(['state', 'status'], 'BGP peer state') });

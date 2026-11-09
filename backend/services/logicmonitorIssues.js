@@ -88,6 +88,13 @@ const THRESHOLD_DEFS = {
   // Round 12: carrier aliases for circuit labels and operator-defined raw datapoint rules.
   lm_carrier_aliases: { type: 'text', def: '', maxLength: 2000, label: 'Carrier aliases (token=Carrier, comma list)' },
   lm_raw_rules: { type: 'text', def: '[]', maxLength: 20000, label: 'Raw datapoint rules (JSON)' },
+  // Trend findings (logicmonitorTrends.computeTrendFindings): forecasts, optic margin, PoE, interface growth.
+  lm_trend_min_points: { def: 7, min: 3, max: 60, label: 'Daily points a forecast needs before it is shown' },
+  lm_trend_min_r2: { def: 0.5, min: 0, max: 1, float: true, decimals: 2, label: 'Minimum R2 of a forecast fit' },
+  lm_optic_margin_warn_db: { def: 2, min: 0, max: 10, float: true, label: 'Optic receive margin warning (dB above the low warning)' },
+  lm_poe_warn_pct: { def: 90, min: 50, max: 100, label: 'PoE budget used forecast line (%)' },
+  lm_if_forecast_pct: { def: 80, min: 50, max: 100, label: 'Interface utilization forecast line (%)' },
+  lm_trend_window_days: { def: 90, min: 14, max: 365, label: 'History window the trend engine reads (days)' },
 };
 
 /** Text settings (site roots, WAN overrides): a trimmed string, capped. */
@@ -109,7 +116,7 @@ function getThreshold(key) {
   if (raw == null || raw === '') return d.def;
   const n = Number(raw);
   if (!Number.isFinite(n)) return d.def;
-  if (d.float) return Math.min(d.max, Math.max(d.min, Math.round(n * 10) / 10));
+  if (d.float) { const f = d.decimals === 2 ? 100 : 10; return Math.min(d.max, Math.max(d.min, Math.round(n * f) / f)); }
   return Math.min(d.max, Math.max(d.min, Math.round(n)));
 }
 

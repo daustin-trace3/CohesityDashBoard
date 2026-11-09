@@ -237,6 +237,8 @@ function buildDevicePlan(db) {
 
   // Round 11 WP-S: six Linux and six Windows guests of the demo's own vCenter VMs (generators/logicmonitorServersDemo.js).
   for (const c of require('./logicmonitorServersDemo').serverDevices(db)) add(c);
+  // Trend analytics round: three more BIG-IP pairs (both active, neither active, asymmetric), appended last so no id moves.
+  for (const n of require('./logicmonitorAnalyticsDemo').F5_ANALYTICS_DEVICES) add({ name: n, site: n.slice(0, 3), kind: 'f5', r8: true });
 
   let id = 101;
   const counters = {};
@@ -1415,6 +1417,7 @@ function seedLogicmonitor(db, { now, encrypt }) {
   })();
   counts.interfaceHistory = ifHist.rows;
   counts.interfaceDaily = ifHist.dailyRows;
+  counts.analyticsInterfaceDaily = require('./logicmonitorAnalyticsDemo').seedAnalyticsInterfaces(db, { sid: sourceId, ifaces, nowMs });
 
   // -- Write: check history, daily and location state -------------------------------
   const chk = db.transaction(() => {
@@ -1693,6 +1696,11 @@ function seedLogicmonitor(db, { now, encrypt }) {
       lmVendors.applyDatasourceVendors(db, src.id);
     }
   }
+
+  // Trend findings: the real engine over the seeded daily tables, after vendor keys are set.
+  try {
+    counts.trendFindings = require('./logicmonitorAnalyticsDemo').finalize(db, { sourceId, nowMs });
+  } catch (err) { console.warn(`[seedDemo] logicmonitor trend findings skipped: ${err.message}`); }
 
   return { sources: 2, ...counts, wp1 };
 }
@@ -2130,16 +2138,20 @@ function seedDsMetrics(db, { sid, devices, ifaces, nowMs }) {
     return hds;
   };
 
+  const seenInstances = new Set();
   const dailyItems = []; // every seeded numeric metric, rolled into lm_ds_daily at the end (history round)
   /** One instance with its latest metric values; hist maps metric -> 336 values (oldest first). */
-  function put(dev, ds, display, family, key, metrics, hist = null, name = null) {
+  function put(dev, ds, display, family, key, metrics, hist = null, name = null, daily = null) {
     const hds = hdsFor(dev, ds, display);
     insInst.run(sid, dev.id, hds, ds, family, key, name || key);
-    out.instances += 1;
+    const instKey = `${dev.id}|${hds}|${key}`;
+    const isNewInstance = !seenInstances.has(instKey); // a re-put (analytics round) replaces the row and must not count twice
+    seenInstances.add(instKey);
+    if (isNewInstance) out.instances += 1;
     for (const [metric, value] of Object.entries(metrics)) {
       if (value == null) continue;
       if (typeof value === 'number' && Number.isFinite(value)) {
-        dailyItems.push({ dev, hds, ds, key, metric, value, varies: !!(hist && hist[metric]) });
+        dailyItems.push({ dev, hds, ds, key, metric, value, varies: !!(hist && hist[metric]), daily: daily && daily[metric] ? daily[metric] : null });
       }
       insMet.run(sid, dev.id, hds, ds, family, key, metric, metric, value, latest);
       out.metrics += 1;
@@ -2153,7 +2165,7 @@ function seedDsMetrics(db, { sid, devices, ifaces, nowMs }) {
       }
     }
     const ik = `${dev.id}|${hds}`;
-    instN.set(ik, { dev, hds, n: (instN.has(ik) ? instN.get(ik).n : 0) + 1 });
+    instN.set(ik, { dev, hds, n: (instN.has(ik) ? instN.get(ik).n : 0) + (isNewInstance ? 1 : 0) });
   }
 
   // Diurnal series (9:00 peak) ending exactly at cur; lo/hi clamp.
@@ -2307,7 +2319,7 @@ function seedDsMetrics(db, { sid, devices, ifaces, nowMs }) {
   }
 
   // ---- Load balancers ---------------------------------------------------------------------
-  const f5Active = { 'phx-f5-01': true, 'dal-f5-01': true };
+  const f5Active = { 'phx-f5-01': true, 'dal-f5-01': true, ...require('./logicmonitorAnalyticsDemo').F5_ANALYTICS_ACTIVE };
   for (const d of devices.filter((x) => x.kind === 'f5' && x.hostStatus === 'normal')) {
     const active = !!f5Active[d.name];
     const siteOctet = d.name.startsWith('dal') ? 20 : 10;
@@ -2367,6 +2379,8 @@ function seedDsMetrics(db, { sid, devices, ifaces, nowMs }) {
   require('./logicmonitorAppsDemo').seedAppsViaLm(devices, { put, rng, r1, series });
   // Round 11 WP-V: voice, Zscaler and ISE rows (generators/logicmonitorServicesDemo.js; own PRNG).
   require('./logicmonitorServicesDemo').seedServicesViaLm(devices, { put, r1, series, steps: R8_STEPS, stepSec: R8_STEP_S });
+  // Trend analytics round: Cisco and F5 stories with daily overrides (generators/logicmonitorAnalyticsDemo.js; own PRNG).
+  require('./logicmonitorAnalyticsDemo').seedAnalytics(devices, { put, rng, ifaces, rngFor });
 
   // Keep the datasource inventory counts in step with what was collected.
   for (const { dev, hds, n } of instN.values()) ddsUpd.run(n, n, sid, dev.id, hds);
@@ -2400,6 +2414,13 @@ function seedDsDaily(db, { sid, items, nowMs }) {
       for (let k = HIST_DAYS - 1; k >= 0; k -= 1) {
         const ms = nowMs - k * 86400000;
         const day = new Date(ms).toISOString().slice(0, 10);
+        if (it.daily) {
+          const o = it.daily(k);
+          const sm = k === 0 ? 20 : 48;
+          ins.run(sid, it.dev.id, it.hds, it.ds, it.key, it.metric, day, sm, r2(o.min), r2(o.avg * sm), r2(o.max), r2(o.last), Math.floor(ms / 1000));
+          n += 1;
+          continue;
+        }
         let avg = it.value;
         let lo = it.value;
         let hi = it.value;

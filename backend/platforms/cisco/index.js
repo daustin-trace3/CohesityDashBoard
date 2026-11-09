@@ -10,6 +10,7 @@ const express = require('express');
 const { query, param, validationResult } = require('express-validator');
 const { sendCsv: sendCsvRows } = require('../../utils/csv');
 const { createCiscoAdvisor, REPORT_KEYS } = require('../../services/advisors/ciscoAdvisor');
+const analytics = require('./analytics');
 
 const BRAND = '#049FD9';
 const VENDORS = ['cisco', 'meraki'];
@@ -145,6 +146,7 @@ function buildOverview(coreApi) {
     voice: { devices: voice.length, degraded: voice.filter((v) => isBad(v.state)).length },
     alerts: { critical: alertCount('critical'), warning: alertCount('warning') },
     issues: { critical: issueCount('critical'), warning: issueCount('warning') },
+    tiles: analytics.buildTiles(analytics.makeCaller(feedsOf(coreApi))),
     sources: sourcesOf(coreApi),
     topIssues: issuesWorstFirst(issues).slice(0, 6),
     devicesWorstFirst: devs.slice().sort((a, b) => (STATE_RANK[normState(a.state)] - STATE_RANK[normState(b.state)])
@@ -334,6 +336,9 @@ function createRouter(coreApi) {
 
   router.get('/overview', h((req, res) => res.json(buildOverview(coreApi))));
 
+  // Switching and routing analytics (hardware, interfaces, optics, PoE, routing, resources, reachability, fleet, trends).
+  analytics.mount(router, { coreApi, wrap: h });
+
   // ---- devices ----
   const deviceList = (req) => {
     const { q, kind, family: fam, state, siteKey, sourceId } = req.query;
@@ -359,6 +364,7 @@ function createRouter(coreApi) {
       alerts: scoped(feed(coreApi, 'alerts', { vendorKey: device.vendorKey, deviceIds: [device.id], open: true })),
       metrics: rowsOf(feed(coreApi, 'metrics', { deviceId: device.id, sourceId: sid })),
       datasources: rowsOf(feed(coreApi, 'datasources', { deviceId: device.id, sourceId: sid })),
+      resources: analytics.buildResources(analytics.makeCaller(feedsOf(coreApi)), { days: 90, deviceId: device.id, sourceId: sid }),
     });
   }));
 
@@ -541,7 +547,7 @@ module.exports = {
   vendorKeys: VENDORS.slice(),
   presence,
   createRouter,
-  navSections: ['overview', 'alerts', 'issues', 'devices', 'firewalls', 'wireless', 'voice', 'ise', 'advisor', 'settings'],
+  navSections: ['overview', 'alerts', 'issues', 'devices', 'firewalls', 'hardware', 'interfaces', 'optics', 'poe', 'routing', 'resources', 'reachability', 'wireless', 'voice', 'ise', 'advisor', 'settings'],
   opsSummary,
   collectAlerts,
   searchCategories,

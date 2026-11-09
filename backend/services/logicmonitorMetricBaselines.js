@@ -17,6 +17,8 @@ const lmChecks = require('./logicmonitorChecks');
 // opt in later.
 const BASELINE_METRICS = {
   ipsla: new Set(['rtt_ms', 'jitter_ms', 'loss_pct', 'mos']),
+  // F5 BIG-IP: connection and CPU shape by hour of day (trend finding conn_anomaly reads client_connections).
+  loadbalancer: new Set(['client_connections', 'cpu_pct']),
 };
 // Reference rows only exist for the metrics the watch reads for drift.
 const REFERENCE_METRICS = new Set(['rtt_ms']);

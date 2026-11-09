@@ -18,7 +18,7 @@ const lastOf = (pts, key) => {
   return null;
 };
 
-export default function LmInterfaceCompareModal({ ids, onClose }) {
+export default function LmInterfaceCompareModal({ apiBase = '/logicmonitor', ids, onClose }) {
   const [hours, setHours] = useState(24);
   const [data, setData] = useState(null);
   const [error, setError] = useState(false);
@@ -26,10 +26,10 @@ export default function LmInterfaceCompareModal({ ids, onClose }) {
   useEffect(() => {
     setData(null);
     setError(false);
-    client.get('/logicmonitor/interfaces/compare', { params: { ids: ids.join(','), hours } })
+    client.get(`${apiBase}/interfaces/compare`, { params: { ids: ids.join(','), hours } })
       .then(({ data: d }) => setData(d || {}))
       .catch(() => setError(true));
-  }, [ids, hours]);
+  }, [apiBase, ids, hours]);
 
   const series = useMemo(() => data?.series || [], [data]);
   // Series can sample at different instants; label the x axis from the

@@ -133,16 +133,17 @@ describe('overview', () => {
     expect(o.sources).toHaveLength(1);
     expect(o.topIssues).toHaveLength(3);
     expect(o.topIssues[0].severity).toBe('critical');
-    // 12.4 and -3 are inside 30 days; 70 is only inside 90. F5OS rs-1 is skipped for certs.
-    expect(o.certs).toEqual({ expiring30: 2, expiring90: 3 });
+    // No certificates feed in this fake: the list rows' certsExpiring counts stand in and no per-device loop runs.
+    expect(o.certs).toEqual({ expiring30: 1, expiring90: 1, expired: null, uniqueTotal: null, rawTotal: null });
+    expect(o.tiles).toEqual({ haPairsAtRisk: null, certs30dDeduped: null, cpuForecast30d: null, poolsSpof: null, daemonFlaps7d: null });
     expect(o.devicesWorstFirst.map((d) => d.displayName)).toEqual(['gtm-a', 'lb-b', 'lb-a', 'rs-1']);
-    expect(calls.filter((c) => c.name === 'loadBalancer').map((c) => c.params.deviceId).sort()).toEqual([1, 2, 3]);
+    expect(calls.filter((c) => c.name === 'loadBalancer')).toEqual([]);
   });
 
   it('serves GET /overview', async () => {
     const res = await request(appFor(fakeCoreApi())).get('/api/f5/overview');
     expect(res.status).toBe(200);
-    expect(Object.keys(res.body).sort()).toEqual(['alerts', 'certs', 'daemons', 'devices', 'devicesWorstFirst', 'failover', 'generatedAt', 'issues', 'pools', 'sources', 'topIssues']);
+    expect(Object.keys(res.body).sort()).toEqual(['alerts', 'certs', 'daemons', 'devices', 'devicesWorstFirst', 'failover', 'generatedAt', 'issues', 'pools', 'sources', 'tiles', 'topIssues']);
   });
 
   it('answers 503 connector_unavailable when the feed is missing', async () => {
@@ -360,11 +361,11 @@ describe('agent profile and incident evidence', () => {
 });
 
 describe('advisor', () => {
-  it('lists the five presets and gathers from feeds only', () => {
+  it('lists the seven presets and gathers from feeds only', () => {
     const feeds = fakeCoreApi().feeds;
     const adv = createF5Advisor({ feeds, advisor: platformAdvisor });
     expect(adv.REPORTS).toEqual(REPORT_KEYS);
-    expect(REPORT_KEYS).toEqual(['f5_health', 'f5_capacity', 'f5_cert_audit', 'f5_pool_review', 'f5_change_review']);
+    expect(REPORT_KEYS).toEqual(['f5_health', 'f5_capacity', 'f5_cert_audit', 'f5_pool_review', 'f5_change_review', 'f5_ha_review', 'f5_forecast']);
 
     const health = adv.gatherFor('f5_health');
     expect(health.devices).toHaveLength(4);

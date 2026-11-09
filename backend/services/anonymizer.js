@@ -330,6 +330,20 @@ function loadDictionary() {
           add(picks.filter((p) => p && typeof p.label === 'string' && p.label.trim()).map((p) => ({ name: p.label.trim() })), 'SOURCE');
         }
       } catch { /* unreadable picks: labels fall back to the group-name entries above */ }
+      // F5 pool, member, VIP certificate, wide IP, GTM server and datacenter instance names reach
+      // the F5 analytics pages and advisor gathers; they are entity names, not metric names.
+      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lm_ds_instances'").get()) {
+        const f5Instances = db.prepare("SELECT DISTINCT instance_name AS name FROM lm_ds_instances WHERE datasource_name LIKE 'F5_%' AND instance_name IS NOT NULL AND instance_name != '' LIMIT 5000").all();
+        add(f5Instances, 'OBJECT');
+        // The pool (or VIP) name is the part before the first '/' or ':' and travels on its own
+        // in the F5 pools page and advisor gathers, so it needs its own dictionary entry.
+        const stems = new Set();
+        for (const r of f5Instances) {
+          const stem = String(r.name).split(/[/:]/)[0].trim();
+          if (stem && stem !== String(r.name).trim() && !isIpv4(stem)) stems.add(stem);
+        }
+        add(Array.from(stems).map((name) => ({ name })), 'OBJECT');
+      }
       add(db.prepare("SELECT DISTINCT name FROM lm_checks WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
       add(db.prepare("SELECT DISTINCT target AS name FROM lm_checks WHERE target IS NOT NULL AND target != ''").all(), 'OBJECT');
       add(db.prepare("SELECT DISTINCT username AS name FROM lm_admins WHERE username IS NOT NULL AND username != ''").all(), 'USER');

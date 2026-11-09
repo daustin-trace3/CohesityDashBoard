@@ -6,7 +6,10 @@
 // migrations) by answering an empty value. Row shapes follow routes/logicmonitor.js.
 // Feeds: devices, device, alerts, issues, issueHistory, configChanges, metrics, datasources, health, loadBalancers,
 // loadBalancer, firewalls, firewall, wirelessOverview, wirelessControllers, wirelessController, wirelessAps,
-// wirelessAp, wirelessRf, wirelessSsids, voice, voiceDevice, ise, iseNode, vendorCensus, sources, presence.
+// wirelessAp, wirelessRf, wirelessSsids, voice, voiceDevice, ise, iseNode, vendorCensus, sources, presence, plus the analytics
+// feeds: trends, trendSeries, interfaceSeries, fleetVersions, availability, alertNoise, hardware, interfacesAnalytics, optics, poe,
+// routingPeers, deviceResources, reachability, wirelessAnalytics, certificates, poolMembers, gtm, daemonFlaps, haState,
+// hourlyProfile, interfaces, interfaceHistory, interfaceCompare.
 // The family feeds take { vendorKeys, q, siteKey, sourceId, state, kind, deviceId, controllerId, apKey }.
 const { memoByDbState } = require('../core/dbMemo');
 const lmLb = require('../services/logicmonitorLoadBalancers');
@@ -22,6 +25,10 @@ const lmIse = () => require('../services/logicmonitorIse');
 const lmGroups = () => require('../services/logicmonitorGroups');
 const lmCatalog = () => require('../services/logicmonitorCatalog');
 const lmRaw = () => require('../services/logicmonitorRaw');
+const lmAnalytics = () => require('../services/logicmonitorAnalyticsFeeds');
+const lmFleet = () => require('../services/logicmonitorFleet');
+const lmHardware = () => require('../services/logicmonitorHardware');
+const lmIfFeeds = () => require('../services/logicmonitorInterfaceFeeds');
 
 const epochIso = (v) => {
   if (v == null || v === '' || !Number.isFinite(Number(v)) || Number(v) <= 0) return null;
@@ -463,6 +470,35 @@ function register(feeds) {
   add('vendorCensus', guard(() => [], (db) => vendorCensus(db)));
   add('sources', guard(() => [], sources));
   add('presence', guard(0, presence));
+  // Analytics feeds (LogicMonitor-derived analytics for Cisco and F5), read from lm_trend_findings and the daily tables.
+  const af = lmAnalytics();
+  const fl = lmFleet();
+  add('trends', guard(() => [], af.trendsFeed));
+  add('trendSeries', guard(() => [], af.trendSeries));
+  add('interfaceSeries', guard(() => [], af.interfaceSeries));
+  add('fleetVersions', guard(() => ({ versions: [], rows: [], outliers: [] }), (db, p) => { const v = fl.versionSpread(db, p); return { versions: v.versions, rows: v.versions, outliers: v.outliers }; }));
+  add('availability', guard(() => ({ devices: [], sites: [] }), fl.availability));
+  add('alertNoise', guard(() => ({ byDataSource: [], byDevice: [], repeatOffenders: [] }), fl.alertNoise));
+  add('hardware', guard(() => ({ components: [], derived: { redundancyLost: [], thermalOutliers: [], switchovers30d: [] } }), (db, p) => {
+    const comps = lmHardware().components(db, p);
+    return { components: comps, derived: lmHardware().derived(db, p, comps) };
+  }));
+  add('interfacesAnalytics', guard(() => [], af.interfacesAnalytics));
+  add('optics', guard(() => [], af.optics));
+  add('poe', guard(() => ({ rows: [], sites: [] }), af.poe));
+  add('routingPeers', guard(() => [], af.routingPeers));
+  add('deviceResources', guard(() => [], af.deviceResources));
+  add('reachability', guard(() => ({ ping: [], ntp: [], ipsla: [] }), af.reachability));
+  add('wirelessAnalytics', guard(() => ({ apLoadImbalance: [], channelUtilTrend: [], radiusFailureRatio: [] }), af.wirelessAnalytics));
+  add('certificates', guard(() => [], af.certificates));
+  add('poolMembers', guard(() => [], af.poolMembers));
+  add('gtm', guard(() => ({ requestsPerDay: [], resolutionsPerDay: [], ratio: [], wideIpAvailability: [], datacenterAvailability: [], perWideIp: [] }), af.gtm));
+  add('daemonFlaps', guard(() => [], af.daemonFlaps));
+  add('haState', guard(() => [], af.haState));
+  add('hourlyProfile', guard(() => ({ cells: [], basis: { windowDays: 14, samples: 0 } }), af.hourlyProfile));
+  add('interfaces', guard(() => ({ items: [], total: 0 }), (db, p) => lmIfFeeds().interfaceList(db, p)));
+  add('interfaceHistory', guard(() => ({ points: [], daily: [] }), (db, p) => lmIfFeeds().interfaceHistory(db, p)));
+  add('interfaceCompare', guard(() => ({ series: [] }), (db, p) => lmIfFeeds().interfaceCompare(db, p)));
 }
 
 module.exports = {

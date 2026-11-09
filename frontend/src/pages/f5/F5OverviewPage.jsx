@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
-  Gauge, Server, ShieldAlert, AlertTriangle, CheckCircle2, Layers, CalendarClock, Repeat, Cpu,
+  Gauge, Server, ShieldAlert, AlertTriangle, CheckCircle2, Layers, CalendarClock, Repeat, Cpu, TrendingUp, Split, RotateCcw,
 } from 'lucide-react';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableSearch, TablePager } from '../../components/ui/tableTools';
@@ -16,6 +16,7 @@ const n0 = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
 export default function F5OverviewPage() {
   const { data, error, loading, reload, loadedAt } = useF5Get('/f5/overview', 'the F5 overview');
+  const navigate = useNavigate();
   const [open, setOpen] = useState(null);
 
   const shapeOk = !!data && data.devices && typeof data.devices === 'object';
@@ -24,6 +25,7 @@ export default function F5OverviewPage() {
   const certs = data?.certs || {};
   const failover = data?.failover || {};
   const daemons = data?.daemons || {};
+  const tiles = data?.tiles || {};
   const sources = arr(data?.sources);
   const total = n0(dev.total);
 
@@ -62,6 +64,14 @@ export default function F5OverviewPage() {
         <StatCard icon={CalendarClock} label="Certs expiring" value={fmtNum(n0(certs.expiring30))} tone={n0(certs.expiring30) ? 'warn' : 'ok'} sub={`within 30 days, ${fmtNum(n0(certs.expiring90))} within 90`} loading={loading} />
         <StatCard icon={Repeat} label="Failover" value={`${fmtNum(n0(failover.active))} active`} tone={n0(failover.degraded) ? 'warn' : 'ok'} sub={`${fmtNum(n0(failover.standby))} standby, ${fmtNum(n0(failover.degraded))} degraded`} loading={loading} />
         <StatCard icon={Cpu} label="Daemons down" value={fmtNum(n0(daemons.down))} tone={n0(daemons.down) ? 'crit' : 'ok'} loading={loading} />
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
+        <StatCard icon={Repeat} label="HA pairs at risk" value={tiles.haPairsAtRisk == null ? '-' : fmtNum(tiles.haPairsAtRisk)} tone={tiles.haPairsAtRisk ? 'crit' : 'ok'} sub="both or neither active, no headroom" loading={loading} onClick={() => navigate('/f5/ha')} />
+        <StatCard icon={CalendarClock} label="Certs under 30 d" value={tiles.certs30dDeduped == null ? '-' : fmtNum(tiles.certs30dDeduped)} tone={tiles.certs30dDeduped ? 'warn' : 'ok'} sub="counted once per certificate" loading={loading} onClick={() => navigate('/f5/certificates')} />
+        <StatCard icon={TrendingUp} label="CPU to 80% in 30 d" value={tiles.cpuForecast30d == null ? '-' : fmtNum(tiles.cpuForecast30d)} tone={tiles.cpuForecast30d ? 'warn' : 'ok'} sub="linear-fit estimate" loading={loading} onClick={() => navigate('/f5/trends')} />
+        <StatCard icon={Split} label="Pools, single point of failure" value={tiles.poolsSpof == null ? '-' : fmtNum(tiles.poolsSpof)} tone={tiles.poolsSpof ? 'warn' : 'ok'} loading={loading} onClick={() => navigate('/f5/pools')} />
+        <StatCard icon={RotateCcw} label="Daemon flaps, 7 d" value={tiles.daemonFlaps7d == null ? '-' : fmtNum(tiles.daemonFlaps7d)} tone={tiles.daemonFlaps7d ? 'warn' : 'ok'} loading={loading} onClick={() => navigate('/f5/stability')} />
       </div>
 
       {loading ? <LoadingPanel label="Loading F5 devices..." height={200} /> : shapeOk && total === 0 ? (

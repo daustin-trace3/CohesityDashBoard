@@ -1,4 +1,4 @@
-import { HeartPulse, Gauge, ShieldCheck, Layers, GitCompare } from 'lucide-react';
+import { HeartPulse, Gauge, ShieldCheck, Layers, GitCompare, Repeat, TrendingUp } from 'lucide-react';
 import PlatformAdvisorPage from '../../components/PlatformAdvisorPage';
 import { BRAND } from './f5Shared';
 
@@ -14,6 +14,10 @@ const TABS = [
     blurb: 'Degraded pools and the members that are down, by device and site.' },
   { slug: 'f5_change_review', label: 'Change review', icon: GitCompare,
     blurb: 'Config ledger changes recorded for F5 devices. Says so when the ledger holds none.' },
+  { slug: 'f5_ha_review', label: 'HA review', icon: Repeat,
+    blurb: 'HA pairs: both or neither active, sync state, failover headroom and standby share.' },
+  { slug: 'f5_forecast', label: 'Forecast', icon: TrendingUp,
+    blurb: 'CPU, memory and filesystem forecasts with the basis of each fit; insufficient data is called out.' },
 ];
 
 export default function F5AdvisorPage() {

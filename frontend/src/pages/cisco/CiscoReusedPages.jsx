@@ -8,6 +8,7 @@ import LmWirelessRfPage from '../logicmonitor/LmWirelessRfPage';
 import LmWirelessSsidsPage from '../logicmonitor/LmWirelessSsidsPage';
 import LmVoicePage from '../logicmonitor/LmVoicePage';
 import LmIsePage from '../logicmonitor/LmIsePage';
+import CiscoWirelessAnalytics from './CiscoWirelessAnalytics';
 
 const A = '/cisco';
 
@@ -15,7 +16,10 @@ export const CiscoFirewallsPage = () => (
   <LmFirewallsPage apiBase={A} title="Firewalls" description="Cisco ASA and Meraki MX firewalls with HA, sessions, tunnels and load, from the DataSource metrics tier" />
 );
 export const CiscoWirelessOverviewPage = () => (
-  <LmWirelessOverviewPage apiBase={A} title="Wireless" description="Cisco controllers, access points, RF and clients from the WLC DataSources in LogicMonitor" />
+  <>
+    <LmWirelessOverviewPage apiBase={A} title="Wireless" description="Cisco controllers, access points, RF and clients from the WLC DataSources in LogicMonitor" />
+    <CiscoWirelessAnalytics />
+  </>
 );
 export const CiscoWirelessControllersPage = () => (
   <LmWirelessControllersPage apiBase={A} title="Wireless Controllers" description="Cisco AireOS and Catalyst 9800 controllers with HA, AP and radio health, clients and RADIUS" />

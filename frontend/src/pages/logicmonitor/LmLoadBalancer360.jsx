@@ -4,10 +4,16 @@ import { Scale, ChevronDown, ChevronRight, ChevronLeft } from 'lucide-react';
 import client from '../../api/client';
 import { Badge, LoadingPanel } from '../../components/ui/primitives';
 import { DASH, arr, fmtNum, fmtPct, fmtWhen, stateTone, stateLabel, hostStatusTone, hostStatusLabel } from './helpers';
-import { Modal, SectionPanel, Fact, iconBtn, headRow } from './ui';
+import { Modal, SectionPanel, Fact, iconBtn, headRow, chipBtn } from './ui';
 import { num, AutoTable, TrendLine, IssuesList, pointsOf } from './LmFirewall360';
 
 const VIP_LIMIT = 50;
+const RANGES = [1, 7, 30, 90];
+
+// Daily rows [{day, value}] -> TrendLine points [{epoch seconds, value}].
+const dayPoints = (rows) => arr(rows)
+  .map((p) => ({ epoch: Date.parse(`${String(p.day || '').slice(0, 10)}T00:00:00Z`) / 1000, value: p.value }))
+  .filter((p) => Number.isFinite(p.epoch));
 
 // Member availability reads as an LM enum (1 = available is the assumption,
 // UNVERIFIED) or text; anything else shows raw with a neutral tone.
@@ -150,6 +156,11 @@ export default function LmLoadBalancer360({ deviceId, sourceId, onClose, apiBase
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [vipPage, setVipPage] = useState(1);
+  // Range selector (24 h from the 360 payload, 7 / 30 / 90 days from the platform's daily series). Only the
+  // F5 platform serves /trends/series; the LogicMonitor page keeps its fixed 24 hour charts.
+  const rangeable = apiBase !== '/logicmonitor';
+  const [range, setRange] = useState(1);
+  const [longSeries, setLongSeries] = useState(null);
 
   useEffect(() => { setVipPage(1); setData(null); setError(null); }, [deviceId, sourceId]);
 
@@ -163,6 +174,17 @@ export default function LmLoadBalancer360({ deviceId, sourceId, onClose, apiBase
       .catch((e) => { if (live) setError(e?.response?.status === 404 ? 'Load balancer not found. It may have been removed or is not an F5.' : `Failed to load the load balancer${e?.response?.status ? ` (HTTP ${e.response.status})` : ''}${e?.response?.data?.error ? `: ${e.response.data.error}` : ''}.`); });
     return () => { live = false; };
   }, [deviceId, sourceId, vipPage, apiBase]);
+
+  useEffect(() => {
+    if (!rangeable || range === 1) { setLongSeries(null); return undefined; }
+    let live = true;
+    setLongSeries(null);
+    const get = (metric) => client.get(`${apiBase}/trends/series`, { params: { deviceId, sourceId: sourceId || undefined, metric, days: range, agg: 'max' } })
+      .then(({ data: r }) => r).catch(() => ({ available: false, points: [] }));
+    Promise.all([get('cpu_pct'), get('client_connections'), get('server_connections')])
+      .then(([cpu, client_, server]) => { if (live) setLongSeries({ cpu, client: client_, server }); });
+    return () => { live = false; };
+  }, [apiBase, rangeable, range, deviceId, sourceId]);
 
   const s = data?.summary || {};
   const d = data?.device || {};
@@ -197,15 +219,38 @@ export default function LmLoadBalancer360({ deviceId, sourceId, onClose, apiBase
 
           <SectionPanel title="Open issues"><IssuesList issues={data.issues} /></SectionPanel>
 
-          <div className="grid lg:grid-cols-2 gap-4">
-            <SectionPanel title="CPU, 24 hours"><TrendLine pct series={[{ label: 'CPU %', points: pointsOf(data.cpuHistory, ['cpu_pct', 'cpuPct']) }]} /></SectionPanel>
-            <SectionPanel title="Connections, 24 hours">
-              <TrendLine series={[
-                { label: 'Client connections', points: pointsOf(data.connectionsHistory, ['client_connections', 'clientConnections', 'client']) },
-                { label: 'Server connections', points: pointsOf(data.connectionsHistory, ['server_connections', 'serverConnections', 'server']), color: '#3FB950' },
-              ]} />
-            </SectionPanel>
-          </div>
+          {rangeable && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] text-ink-faint mr-1">History range</span>
+              {RANGES.map((r) => <button key={r} className={chipBtn(range === r)} onClick={() => setRange(r)}>{r === 1 ? '24 h' : `${r} d`}</button>)}
+            </div>
+          )}
+          {rangeable && range !== 1 ? (
+            <div className="grid lg:grid-cols-2 gap-4">
+              <SectionPanel title={`CPU, ${range} days`} blurb="Daily maximum from the stored daily history.">
+                {longSeries && longSeries.cpu.available === false ? <p className="text-[12px] text-ink-muted py-4 text-center">Daily history is not available yet.</p>
+                  : <TrendLine pct series={[{ label: 'CPU % (daily max)', points: dayPoints(longSeries?.cpu?.points) }]} empty={longSeries ? 'No daily history yet.' : 'Loading...'} />}
+              </SectionPanel>
+              <SectionPanel title={`Connections, ${range} days`} blurb="Daily maximum from the stored daily history.">
+                {longSeries && longSeries.client.available === false ? <p className="text-[12px] text-ink-muted py-4 text-center">Daily history is not available yet.</p> : (
+                  <TrendLine series={[
+                    { label: 'Client connections (daily max)', points: dayPoints(longSeries?.client?.points) },
+                    { label: 'Server connections (daily max)', points: dayPoints(longSeries?.server?.points), color: '#3FB950' },
+                  ]} empty={longSeries ? 'No daily history yet.' : 'Loading...'} />
+                )}
+              </SectionPanel>
+            </div>
+          ) : (
+            <div className="grid lg:grid-cols-2 gap-4">
+              <SectionPanel title="CPU, 24 hours"><TrendLine pct series={[{ label: 'CPU %', points: pointsOf(data.cpuHistory, ['cpu_pct', 'cpuPct']) }]} /></SectionPanel>
+              <SectionPanel title="Connections, 24 hours">
+                <TrendLine series={[
+                  { label: 'Client connections', points: pointsOf(data.connectionsHistory, ['client_connections', 'clientConnections', 'client']) },
+                  { label: 'Server connections', points: pointsOf(data.connectionsHistory, ['server_connections', 'serverConnections', 'server']), color: '#3FB950' },
+                ]} />
+              </SectionPanel>
+            </div>
+          )}
 
           <SectionPanel title="Pools" blurb="Pool is the instance name before the first / or : of the pool member instance (an assumption until the first live poll). Pools with down members sort first.">
             <PoolsPanel pools={data.pools} />

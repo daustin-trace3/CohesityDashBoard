@@ -1,7 +1,7 @@
 import { lazy } from 'react';
 import {
   Gauge, Bell, ClipboardCheck, Sparkles, Server, BrickWall, Wifi, RadioTower, Radio, Users,
-  Phone, Fingerprint, ShieldCheck, Settings,
+  Phone, Fingerprint, ShieldCheck, Settings, Cpu, Cable, Zap, PlugZap, Route as RouteIcon, Radar,
 } from 'lucide-react';
 import { BRAND } from '../../pages/cisco/ciscoShared';
 
@@ -22,6 +22,13 @@ const CiscoWirelessRfPage = lazyReused('CiscoWirelessRfPage');
 const CiscoWirelessSsidsPage = lazyReused('CiscoWirelessSsidsPage');
 const CiscoVoicePage = lazyReused('CiscoVoicePage');
 const CiscoIsePage = lazyReused('CiscoIsePage');
+const CiscoHardwarePage = lazy(() => import('../../pages/cisco/CiscoHardwarePage'));
+const CiscoInterfacesPage = lazy(() => import('../../pages/cisco/CiscoInterfacesPage'));
+const CiscoOpticsPage = lazy(() => import('../../pages/cisco/CiscoOpticsPage'));
+const CiscoPoePage = lazy(() => import('../../pages/cisco/CiscoPoePage'));
+const CiscoRoutingPage = lazy(() => import('../../pages/cisco/CiscoRoutingPage'));
+const CiscoResourcesPage = lazy(() => import('../../pages/cisco/CiscoResourcesPage'));
+const CiscoReachabilityPage = lazy(() => import('../../pages/cisco/CiscoReachabilityPage'));
 const IssueAlertsPage = lazy(() => import('../../components/IssueAlertsPage'));
 const CiscoIssuesPage = () => <IssueAlertsPage platform="cisco" />;
 const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
@@ -45,6 +52,18 @@ const navGroups = [
     items: [
       { label: 'Devices', route: `${B}/devices`, icon: Server, isActive: under(`${B}/devices`) },
       { label: 'Firewalls', route: `${B}/firewalls`, icon: BrickWall, isActive: under(`${B}/firewalls`), requiresFamily: 'firewall' },
+    ],
+  },
+  {
+    label: 'Switching & Routing',
+    items: [
+      { label: 'Hardware', route: `${B}/hardware`, icon: Cpu, isActive: under(`${B}/hardware`), requiresFamily: 'health' },
+      { label: 'Interfaces', route: `${B}/interfaces`, icon: Cable, isActive: under(`${B}/interfaces`) },
+      { label: 'Optics', route: `${B}/optics`, icon: Zap, isActive: under(`${B}/optics`), requiresFamily: 'optics' },
+      { label: 'PoE', route: `${B}/poe`, icon: PlugZap, isActive: under(`${B}/poe`), requiresFamily: 'health' },
+      { label: 'Routing', route: `${B}/routing`, icon: RouteIcon, isActive: under(`${B}/routing`), requiresFamily: 'routing' },
+      { label: 'Resources', route: `${B}/resources`, icon: Gauge, isActive: under(`${B}/resources`) },
+      { label: 'Reachability', route: `${B}/reachability`, icon: Radar, isActive: under(`${B}/reachability`), requiresFamily: 'ipsla' },
     ],
   },
   {
@@ -89,6 +108,13 @@ export default {
     { path: 'cisco/advisor', Component: CiscoAdvisorPage },
     { path: 'cisco/devices', Component: CiscoDevicesPage },
     { path: 'cisco/firewalls', Component: CiscoFirewallsPage },
+    { path: 'cisco/hardware', Component: CiscoHardwarePage },
+    { path: 'cisco/interfaces', Component: CiscoInterfacesPage },
+    { path: 'cisco/optics', Component: CiscoOpticsPage },
+    { path: 'cisco/poe', Component: CiscoPoePage },
+    { path: 'cisco/routing', Component: CiscoRoutingPage },
+    { path: 'cisco/resources', Component: CiscoResourcesPage },
+    { path: 'cisco/reachability', Component: CiscoReachabilityPage },
     { path: 'cisco/wireless', Component: CiscoWirelessOverviewPage },
     { path: 'cisco/wireless/controllers', Component: CiscoWirelessControllersPage },
     { path: 'cisco/wireless/aps', Component: CiscoWirelessApsPage },

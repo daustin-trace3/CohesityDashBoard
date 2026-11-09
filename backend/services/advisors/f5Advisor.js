@@ -10,7 +10,8 @@
 // isConfigured, emailRoute). The cache table f5_ai_reports is created on first use because a derived
 // platform has no migrations.
 
-const REPORT_KEYS = ['f5_health', 'f5_capacity', 'f5_cert_audit', 'f5_pool_review', 'f5_change_review'];
+const REPORT_KEYS = ['f5_health', 'f5_capacity', 'f5_cert_audit', 'f5_pool_review', 'f5_change_review', 'f5_ha_review', 'f5_forecast'];
+const analytics = require('../../platforms/f5/analytics');
 const FEED_CONNECTOR = 'logicmonitor';
 const DETAIL_CAP = 40;
 
@@ -99,11 +100,25 @@ function createF5Advisor({ feeds, advisor }) {
 
   function certEntries() {
     const out = [];
+    // One query through the certificates feed (deduped). Certificate names are not in the anonymizer
+    // dictionary, so they leave as per-device aliases ("certificate 1"); the reply cannot name the real one.
+    const c = analytics.buildCertificates(q);
+    if (c.available) {
+      const seq = new Map();
+      for (const x of c.certs) {
+        const dev = x.devices[0] || 'unknown';
+        const n = (seq.get(dev) || 0) + 1;
+        seq.set(dev, n);
+        out.push({ device: dev, certificate: `certificate ${n}`, daysLeft: round1(x.daysLeft), copies: x.copies, devices: x.devices.length });
+      }
+      return out.sort((a, b) => (a.daysLeft ?? 1e9) - (b.daysLeft ?? 1e9));
+    }
+    // Feed not registered: the per-device 360 detail of the first DETAIL_CAP devices (older connectors).
     // Load balancer rows carry no vendorKind; F5OS has no SSL profiles, so skip it through the device list.
     const f5os = new Set(devices().filter((d) => d.vendorKind === 'f5os').map((d) => `${d.sourceId}:${d.id}`));
     for (const r of lbRows().filter((x) => !f5os.has(`${x.sourceId}:${x.deviceId ?? x.id}`)).slice(0, DETAIL_CAP)) {
       const d = detail(r);
-      for (const c of rowsOf(d && d.certs)) out.push({ device: nameOf(r), certificate: c.name, daysLeft: round1(c.daysLeft) });
+      for (const cc of rowsOf(d && d.certs)) out.push({ device: nameOf(r), certificate: cc.name, daysLeft: round1(cc.daysLeft) });
     }
     return out.sort((a, b) => (a.daysLeft ?? 1e9) - (b.daysLeft ?? 1e9));
   }
@@ -124,6 +139,19 @@ function createF5Advisor({ feeds, advisor }) {
     };
   }
 
+  // Pools where one member carries all the traffic. Pool names are not in the anonymizer dictionary, so they
+  // leave as per-device aliases ("pool 1").
+  function spofPools() {
+    const p = analytics.buildPools(q);
+    if (!p.available) return [];
+    const seq = new Map();
+    return p.pools.filter((x) => x.spof || x.zeroMembers.length).slice(0, 25).map((x) => {
+      const n = (seq.get(x.device) || 0) + 1;
+      seq.set(x.device, n);
+      return { device: x.device, pool: `pool ${n}`, members: x.memberCount, carryingTraffic: x.memberCount - x.zeroMembers.length, spof: x.spof, idleMembers: x.zeroMembers.length, cv: x.cv };
+    });
+  }
+
   function gatherPoolReview() {
     const lbs = lbRows().filter((r) => (r.poolsDegraded || 0) > 0 || (r.membersDown || 0) > 0);
     const degraded = [];
@@ -140,6 +168,7 @@ function createF5Advisor({ feeds, advisor }) {
       generatedAt: new Date().toISOString(),
       devicesWithDegradedPools: lbs.map((r) => ({ device: nameOf(r), poolsDegraded: r.poolsDegraded || 0, membersDown: r.membersDown || 0, membersTotal: r.membersTotal || 0 })).slice(0, 30),
       degradedPools: degraded.slice(0, 40),
+      singlePointOfFailure: spofPools(),
       poolIssues: issues().filter((i) => i.type === 'lb-pool-degraded').map((i) => ({ target: i.target, severity: i.severity, message: i.message })).slice(0, 30),
       note: lbs.length === 0 ? 'No F5 pool has a member down right now.' : undefined,
     };
@@ -160,6 +189,34 @@ function createF5Advisor({ feeds, advisor }) {
       windowDays: 30,
       changes: changes.slice(0, 60),
       note: changes.length === 0 ? 'The config ledger holds no F5 device changes in the last 30 days (or the ledger does not cover F5 yet).' : undefined,
+    };
+  }
+
+  function gatherHaReview() {
+    const ha = analytics.buildHa(q);
+    return {
+      generatedAt: new Date().toISOString(),
+      note: ha.available ? 'Pairs are matched by device group or by site plus name stem; headroom is active p95 CPU plus standby baseline CPU against 80 percent.' : 'The HA state feed is not available on this ICC build.',
+      summary: ha.summary,
+      pairs: ha.pairs.slice(0, 40).map((p) => ({
+        units: p.units.filter(Boolean).map((u) => ({ device: u.device, role: u.role, cpuP95: round1(u.cpuP95), clientConnections: u.clientConnections })),
+        severity: p.severity, reasons: p.reasons, syncState: p.syncState, daysSinceFailover: p.daysSinceFailover, failovers90d: p.failovers90d,
+        headroom: { sum: round1(p.headroom.sum), ok: p.headroom.ok }, standbySharePct: p.standbyShare == null ? null : Math.round(p.standbyShare * 100),
+      })),
+    };
+  }
+
+  function gatherForecast() {
+    const t = analytics.buildTrends(q, { days: 30 });
+    return {
+      generatedAt: new Date().toISOString(),
+      note: t.available ? 'Forecasts are linear fits over daily history, labelled with their basis. insufficient data means too few days or a weak fit; do not extrapolate those.' : 'The device resources feed is not available on this ICC build.',
+      units: t.devices.slice(0, 40).map((d) => ({
+        device: d.device, cpuNow: round1(d.cpu.now), cpuP95: round1(d.cpu.p95), cpuDaysTo80: d.cpu.forecast.days == null ? null : round1(d.cpu.forecast.days), cpuBasis: d.cpu.forecast.basis,
+        memP95: round1(d.mem.p95), memoryCreep: d.mem.creep ? d.mem.creep.basis : null,
+        filesystems: d.filesystems.slice(0, 5).map((f) => ({ usedPct: round1(f.usedPct), daysTo90: f.forecast.days == null ? null : round1(f.forecast.days), basis: f.forecast.basis })),
+      })),
+      connectionAnomalies: t.anomalies.slice(0, 20).map((a) => ({ device: a.device, direction: a.direction, severity: a.severity })),
     };
   }
 
@@ -207,6 +264,22 @@ function createF5Advisor({ feeds, advisor }) {
           'that precede an incident, and do not infer intent. Do not invent data. Markdown sections: **Summary**, **Changes by device**, ' +
           '**Recommended actions**. Keep under ~300 words.',
         gather: gatherChangeReview, noun: 'F5 change review',
+      },
+      f5_ha_review: {
+        system:
+          'You are an F5 BIG-IP high availability reviewer. You are given HA pairs with unit roles, sync state, days since the last failover, ' +
+          'failovers in 90 days, failover headroom (active p95 CPU plus standby baseline CPU against 80 percent) and the standby share of the ' +
+          'active unit connections. Both units active or neither active is an outage risk. Say which pairs cannot absorb a failover. Do not ' +
+          'invent data. Markdown sections: **Summary**, **Pairs at risk**, **Headroom and asymmetry**, **Recommended actions**. Keep under ~350 words.',
+        gather: gatherHaReview, noun: 'F5 HA review',
+      },
+      f5_forecast: {
+        system:
+          'You are an F5 capacity planner working from trend forecasts. Each unit has p95 CPU, days until 80 percent CPU with the basis of the ' +
+          'fit, memory creep flags, filesystem days to 90 percent and connection anomalies. Treat any forecast marked insufficient data as unknown. ' +
+          'Rank units by urgency and state the basis next to every date. Do not invent data. Markdown sections: **Summary**, **Needs capacity soon**, ' +
+          '**Memory and disk**, **Recommended actions**. Keep under ~350 words.',
+        gather: gatherForecast, noun: 'F5 forecast review',
       },
     },
   });

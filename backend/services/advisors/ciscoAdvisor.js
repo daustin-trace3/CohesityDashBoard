@@ -27,6 +27,8 @@ function createCiscoAdvisor({ feeds, advisor }) {
   const hasFeed = (name) => !!(feeds.hasFeed && feeds.hasFeed(FEED_CONNECTOR, name));
   /** Optional family feed: null when the connector lacks it or it fails. */
   const optional = (name, params) => { try { return q(name, { vendorKeys: VENDOR_KEYS, ...(params || {}) }); } catch { return null; } };
+  /** Analytics feed over both keys (the connector takes vendorKey plus includeMeraki); null when the feed is missing. */
+  const analyticsFeed = (name, params) => { try { return q(name, { vendorKey: 'cisco', includeMeraki: true, ...(params || {}) }); } catch { return null; } };
   const perKey = (name, params) => VENDOR_KEYS.flatMap((vendorKey) => rowsOf(q(name, { vendorKey, ...(params || {}) }), 'issues'));
   const devices = () => perKey('devices');
   const issues = () => perKey('issues');
@@ -43,6 +45,21 @@ function createCiscoAdvisor({ feeds, advisor }) {
   }
   const issueRows = (list) => list.map((i) => ({ target: i.target, type: i.type, severity: i.severity, message: i.message })).slice(0, 40);
   const tally = (list, fn) => list.reduce((m, d) => { const k = fn(d) || 'unknown'; m[k] = (m[k] || 0) + 1; return m; }, {});
+
+  /** Trend findings that need attention (warning or critical), with their basis text. Empty when the trend feed is missing. */
+  function forecastFindings() {
+    const rows = rowsOf(analyticsFeed('trends', { limit: 200 })).filter((r) => r.severity === 'warning' || r.severity === 'critical');
+    return rows.slice(0, 20).map((r) => ({
+      device: r.device, kind: r.kind, subject: r.subject, severity: r.severity, value: round1(r.value), threshold: round1(r.threshold),
+      daysToThreshold: r.daysToThreshold == null ? 'insufficient data' : round1(r.daysToThreshold),
+      basis: r.daysToThreshold == null ? 'insufficient data' : `linear fit over ${(r.basis && r.basis.windowDays) || r.n || '?'} days, R2 ${round1(r.r2)}`,
+    }));
+  }
+  /** BGP, OSPF and EIGRP peers that flapped 3 or more times in 7 days; peers on dead devices are left out. */
+  function flappingPeers() {
+    return rowsOf(analyticsFeed('routingPeers')).filter((p) => !p.shadowed && (p.flaps7d || 0) >= 3).slice(0, 15)
+      .map((p) => ({ device: p.device, protocol: p.protocol, peer: p.peer, state: p.state, flaps7d: p.flaps7d, flaps30d: p.flaps30d }));
+  }
 
   function gatherHealth() {
     const devs = devices();
@@ -62,7 +79,26 @@ function createCiscoAdvisor({ feeds, advisor }) {
         critical: alerts.filter((a) => a.severityNorm === 'critical').length,
         warning: alerts.filter((a) => a.severityNorm === 'warning').length,
       },
+      forecasts: forecastFindings(),
+      routingPeers: flappingPeers(),
       note: devs.length === 0 ? 'No Cisco or Meraki devices are present in the LogicMonitor inventory.' : undefined,
+    };
+  }
+
+  /** Redundancy loss, thermal outliers, optics near their low warning and PoE headroom from the analytics feeds. Caps 10 to 20 rows each. */
+  function analyticsHardware() {
+    const hw = analyticsFeed('hardware');
+    const d = (hw && hw.derived) || {};
+    const optics = rowsOf(analyticsFeed('optics')).filter((o) => (o.marginDb != null && Number(o.marginDb) < 2) || (o.trend && o.trend.severity !== 'info' && o.trend.severity))
+      .slice(0, 15).map((o) => ({ device: o.device, interface: o.ifName, kind: o.sensorKind, marginDb: round1(o.marginDb), daysToLowWarning: o.trend && o.trend.daysToThreshold != null ? round1(o.trend.daysToThreshold) : 'insufficient data' }));
+    const poe = rowsOf(analyticsFeed('poe')).filter((r) => r.usedPct != null && Number(r.usedPct) >= 80).slice(0, 10)
+      .map((r) => ({ device: r.device, member: r.member, usedPct: round1(r.usedPct), headroomWatts: round1(r.headroomWatts) }));
+    return {
+      redundancyLost: rowsOf(d.redundancyLost).slice(0, 20),
+      thermalOutliers: rowsOf(d.thermalOutliers).slice(0, 15).map((t) => ({ device: t.device, sensor: t.sensor, tempC: round1(t.tempC), modelMedian: round1(t.modelMedian), suspectedSiteHvac: !!t.suspectedSiteHvac })),
+      switchovers30d: rowsOf(d.switchovers30d).slice(0, 15).map((t) => ({ device: t.device, subject: t.subject, count30d: t.value })),
+      opticsAtRisk: optics,
+      poeNearBudget: poe,
     };
   }
 
@@ -86,6 +122,7 @@ function createCiscoAdvisor({ feeds, advisor }) {
       hardwareIssues: issueRows(hw),
       deviceHardwareMetrics: metrics,
       stateByKind: tally(devs, (d) => `${d.vendorKind}:${norm(d.state)}`),
+      ...analyticsHardware(),
     };
   }
 
@@ -188,7 +225,9 @@ function createCiscoAdvisor({ feeds, advisor }) {
         system:
           'You are a Cisco switching hardware reviewer (Catalyst, Nexus, Meraki MS). You are given hardware issues (fans, power supplies, line cards, ' +
           'stack members, PoE, optics, temperature) and the latest hardware metric values for the suspect devices. Group by device and by failed ' +
-          'component type, and say which items need a part replaced versus which need a look at the optic or cable. Samples are single values, so say ' +
+          'component type, and say which items need a part replaced versus which need a look at the optic or cable. The data also lists redundancy loss, ' +
+          'thermal outliers (a site-wide cluster suggests HVAC, not the devices), optics near their low warning and PoE near budget; forecasts are ' +
+          'estimates and are labelled with their basis, so quote the basis and never state a date as certain. Samples are single values, so say ' +
           'when a trend is needed. Do not invent data. Markdown sections: **Summary**, **Hardware faults**, **Likely causes**, **Recommended actions**. ' +
           'Keep under ~350 words.',
         gather: gatherSwitchingHardware, noun: 'Cisco switching hardware review',

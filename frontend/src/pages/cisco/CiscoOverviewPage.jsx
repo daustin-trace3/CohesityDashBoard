@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Gauge, Server, ShieldAlert, AlertTriangle, CheckCircle2, BrickWall, RadioTower, Wifi, Fingerprint,
+  Layers, Zap, TrendingUp, Repeat, RotateCcw,
 } from 'lucide-react';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableSearch, TablePager } from '../../components/ui/tableTools';
@@ -10,6 +11,7 @@ import { SectionPanel, headRow } from '../logicmonitor/ui';
 import { IssuesList } from '../logicmonitor/kit360';
 import { StateDot, stateWord, stateRankOf } from '../logicmonitor/groupTree';
 import LmDevice360 from '../logicmonitor/LmDevice360';
+import CiscoFleetSection from './CiscoFleetSection';
 import {
   BRAND, API, SOURCE_NOTE, OLDER_VERSION, kindLabel, familyLabel, rowsOf, useCiscoGet,
 } from './ciscoShared';
@@ -26,6 +28,9 @@ export default function CiscoOverviewPage() {
   const wl = data?.wireless || {};
   const ise = data?.ise || {};
   const sources = arr(data?.sources);
+  const tiles = data?.tiles && typeof data.tiles === 'object' ? data.tiles : null;
+  // A figure whose feed is missing is null and reads as a dash, never as zero.
+  const tileVal = (v) => (v == null ? DASH : fmtNum(n0(v)));
   const total = n0(dev.total);
   const byKind = dev.byKind && typeof dev.byKind === 'object' ? dev.byKind : {};
   const byFamily = dev.byFamily && typeof dev.byFamily === 'object' ? dev.byFamily : {};
@@ -64,6 +69,16 @@ export default function CiscoOverviewPage() {
         <StatCard icon={Wifi} label="Access points" value={fmtNum(n0(wl.aps))} tone={n0(wl.apsDown) ? 'crit' : 'ok'} sub={`${fmtNum(n0(wl.apsDown))} down, ${fmtNum(n0(wl.clients))} clients`} loading={loading} />
         <StatCard icon={Fingerprint} label="ISE nodes" value={fmtNum(n0(ise.nodes))} tone={n0(ise.degraded) ? 'warn' : 'ok'} sub={`${fmtNum(n0(ise.degraded))} degraded`} loading={loading} />
       </div>
+
+      {tiles && (
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-3">
+          <StatCard icon={Layers} label="Redundancy lost" value={tileVal(tiles.redundancyLost)} tone={n0(tiles.redundancyLost) ? 'warn' : 'ok'} sub="PSU, supervisor, stack" loading={loading} />
+          <StatCard icon={Zap} label="Optics at risk" value={tileVal(tiles.opticsAtRisk)} tone={n0(tiles.opticsAtRisk) ? 'warn' : 'ok'} sub="thin margin or falling" loading={loading} />
+          <StatCard icon={TrendingUp} label="Links to 80% in 30 d" value={tileVal(tiles.ifForecast30d)} tone={n0(tiles.ifForecast30d) ? 'warn' : 'ok'} sub="estimate from daily peaks" loading={loading} />
+          <StatCard icon={Repeat} label="Peers flapping" value={tileVal(tiles.peersFlapping)} tone={n0(tiles.peersFlapping) ? 'warn' : 'ok'} sub="3+ resets in 7 d" loading={loading} />
+          <StatCard icon={RotateCcw} label="Reboots (7 d)" value={tileVal(tiles.reboots7d)} sub="uptime resets" loading={loading} />
+        </div>
+      )}
 
       {kindChips.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 mb-4">
@@ -140,6 +155,8 @@ export default function CiscoOverviewPage() {
           </div>
         </div>
       )}
+
+      {shapeOk && total > 0 && <CiscoFleetSection />}
 
       {shapeOk && (
         <p className="text-[11px] text-ink-faint mt-4">

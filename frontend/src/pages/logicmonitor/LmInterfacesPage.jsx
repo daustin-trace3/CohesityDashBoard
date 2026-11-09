@@ -16,7 +16,8 @@ const PRESETS = [
 const SPEEDS = ['<=100M', '1G', '10G', '25G+', 'unknown'];
 const MAX_COMPARE = 8;
 
-export default function LmInterfacesPage() {
+// apiBase lets the Cisco platform reuse this page against /cisco. bare hides the page header (the Cisco page supplies its own).
+export default function LmInterfacesPage({ apiBase = '/logicmonitor', bare = false }) {
   const { toast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const [rows, setRows] = useState(null);
@@ -51,19 +52,19 @@ export default function LmInterfacesPage() {
     return params;
   }, [q, searchParams]);
 
-  const load = useCallback(() => client.get('/logicmonitor/interfaces', { params: { ...queryParams(), page, limit, sort, dir } })
+  const load = useCallback(() => client.get(`${apiBase}/interfaces`, { params: { ...queryParams(), page, limit, sort, dir } })
     .then(({ data }) => {
       setRows(Array.isArray(data?.items) ? data.items : []);
       setTotal(data?.total ?? 0);
       setLastRefreshed(new Date());
     })
-    .catch(() => { setRows([]); setTotal(0); toast({ type: 'error', title: 'Failed to load interfaces' }); }), [queryParams, page, limit, sort, dir, toast]);
+    .catch(() => { setRows([]); setTotal(0); toast({ type: 'error', title: 'Failed to load interfaces' }); }), [queryParams, page, limit, sort, dir, toast, apiBase]);
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
-    client.get('/logicmonitor/summary').then(({ data }) => setVendors((data?.byVendor || []).map((v) => v.vendor).filter(Boolean))).catch(() => setVendors([]));
-    client.get('/logicmonitor/sites').then(({ data }) => setSites((Array.isArray(data) ? data : []).filter((x) => x.siteKey).map((x) => ({ k: x.siteKey, l: x.siteName || x.siteKey })).sort((a, b) => String(a.l).localeCompare(String(b.l))))).catch(() => setSites([]));
-  }, []);
+    client.get(`${apiBase}/summary`).then(({ data }) => setVendors((data?.byVendor || []).map((v) => v.vendor).filter(Boolean))).catch(() => setVendors([]));
+    client.get(`${apiBase}/sites`).then(({ data }) => setSites((Array.isArray(data) ? data : []).filter((x) => x.siteKey).map((x) => ({ k: x.siteKey, l: x.siteName || x.siteKey })).sort((a, b) => String(a.l).localeCompare(String(b.l))))).catch(() => setSites([]));
+  }, [apiBase]);
 
   const onSort = (k) => {
     if (sort === k) setDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -76,7 +77,7 @@ export default function LmInterfacesPage() {
   const exportCsv = async () => {
     setExporting(true);
     try {
-      await downloadCsv('/logicmonitor/interfaces.csv', queryParams(), 'logicmonitor-interfaces');
+      await downloadCsv(`${apiBase}/interfaces.csv`, queryParams(), `${apiBase.replace(/^\//, '')}-interfaces`);
     } catch {
       toast({ type: 'error', title: 'Export failed' });
     } finally {
@@ -86,10 +87,12 @@ export default function LmInterfacesPage() {
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={Cable} title="Interfaces" description="Estate-wide interface status, utilization, errors and discards from the interface poll">
-        <LastUpdated date={lastRefreshed} prefix="Updated" />
-        <RefreshButton onClick={load} />
-      </PageHeader>
+      {!bare && (
+        <PageHeader icon={Cable} title="Interfaces" description="Estate-wide interface status, utilization, errors and discards from the interface poll">
+          <LastUpdated date={lastRefreshed} prefix="Updated" />
+          <RefreshButton onClick={load} />
+        </PageHeader>
+      )}
 
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <div className="flex flex-wrap items-center gap-1.5 mb-3">
@@ -179,8 +182,8 @@ export default function LmInterfacesPage() {
         )}
       </div>
 
-      {comparing && <LmInterfaceCompareModal ids={comparing} onClose={() => setComparing(null)} />}
-      {history && <LmInterfaceHistoryModal deviceId={history.deviceId} iface={history} deviceName={history.deviceName} onClose={() => setHistory(null)} />}
+      {comparing && <LmInterfaceCompareModal apiBase={apiBase} ids={comparing} onClose={() => setComparing(null)} />}
+      {history && <LmInterfaceHistoryModal apiBase={apiBase} deviceId={history.deviceId} iface={history} deviceName={history.deviceName} onClose={() => setHistory(null)} />}
     </div>
   );
 }

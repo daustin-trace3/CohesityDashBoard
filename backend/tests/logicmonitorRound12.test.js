@@ -112,7 +112,7 @@ describe('A1: exact Palo Alto and F5 picks', () => {
     expect(stack.learned).toMatchObject({ stack_member_state: 'StackState', stack_role: 'SwitchRole' });
   });
 
-  it('CATALOG_VERSION is 5', () => { expect(catalog.CATALOG_VERSION).toBe(7); });
+  it('CATALOG_VERSION is 5', () => { expect(catalog.CATALOG_VERSION).toBe(8); });
 
   it('an _alarm metric is a fault at 1 and fine at 0; other states keep their enum', () => {
     expect(lmIssues.stateIsFault(0, 'psu_low_alarm')).toBe(false);
@@ -201,7 +201,7 @@ describe('A1/A5: metric issues', () => {
   });
 
   it('threshold keys: 69 including lm_carrier_aliases, lm_raw_rules and the round 13 circuit keys', () => {
-    expect(Object.keys(lmIssues.THRESHOLD_DEFS)).toHaveLength(69);
+    expect(Object.keys(lmIssues.THRESHOLD_DEFS)).toHaveLength(75);
     expect(lmIssues.THRESHOLD_DEFS.lm_raw_rules).toMatchObject({ type: 'text', def: '[]', maxLength: 20000 });
     expect(lmIssues.THRESHOLD_DEFS.lm_carrier_aliases).toMatchObject({ type: 'text', def: '', maxLength: 2000 });
   });

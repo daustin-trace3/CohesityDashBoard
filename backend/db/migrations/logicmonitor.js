@@ -1014,4 +1014,36 @@ module.exports = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_lm_ds_hist_dev_metric ON lm_ds_metrics_history(source_id, lm_device_id, metric, sampled_at_epoch)');
     },
   },
+  {
+    // Trend findings (LogicMonitor-derived analytics for the Cisco and F5 platforms): forecasts, creep,
+    // reboots, peer flaps, state changes and connection anomalies computed once an hour by the poller
+    // from the daily history tables. Computed state, rebuilt every run, so not in the retention buckets.
+    version: 17,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS lm_trend_findings (
+          source_id         INTEGER NOT NULL REFERENCES lm_sources(id) ON DELETE CASCADE,
+          lm_device_id      INTEGER NOT NULL,
+          vendor_key        TEXT,
+          kind              TEXT NOT NULL,
+          subject           TEXT NOT NULL,
+          metric            TEXT NOT NULL,
+          value             REAL,
+          threshold         REAL,
+          days_to_threshold REAL,
+          slope_per_day     REAL,
+          r2                REAL,
+          n                 INTEGER,
+          severity          TEXT NOT NULL DEFAULT 'info',
+          basis_json        TEXT NOT NULL DEFAULT '{}',
+          detail_json       TEXT NOT NULL DEFAULT '{}',
+          computed_at       TEXT NOT NULL,
+          PRIMARY KEY (source_id, lm_device_id, kind, subject, metric)
+        );
+        CREATE INDEX IF NOT EXISTS idx_lm_trend_vendor ON lm_trend_findings(vendor_key, kind, severity);
+        -- The analytics feeds and the trend engine read lm_ds_daily by metric and day (the existing index starts with the device).
+        CREATE INDEX IF NOT EXISTS idx_lm_ds_daily_metric ON lm_ds_daily(metric, day);
+      `);
+    },
+  },
 ];

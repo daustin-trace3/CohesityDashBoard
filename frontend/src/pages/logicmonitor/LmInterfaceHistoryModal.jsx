@@ -25,7 +25,7 @@ const stateOpts = {
 };
 const pctOpts = { ...chartOpts, scales: { x: chartOpts.scales.x, y: { ...chartOpts.scales.y, min: 0, suggestedMax: 100 } } };
 
-export default function LmInterfaceHistoryModal({ deviceId, sourceId, iface, deviceName, onClose }) {
+export default function LmInterfaceHistoryModal({ apiBase = '/logicmonitor', deviceId, sourceId, iface, deviceName, onClose }) {
   const [hours, setHours] = useState(24);
   const [data, setData] = useState(null);
   const [error, setError] = useState(false);
@@ -35,10 +35,10 @@ export default function LmInterfaceHistoryModal({ deviceId, sourceId, iface, dev
     setError(false);
     const params = { hours };
     if (sourceId) params.sourceId = sourceId;
-    client.get(`/logicmonitor/devices/${deviceId}/interfaces/${iface.instanceId}/history`, { params })
+    client.get(`${apiBase}/devices/${deviceId}/interfaces/${iface.instanceId}/history`, { params })
       .then(({ data: d }) => setData(d || {}))
       .catch(() => setError(true));
-  }, [deviceId, sourceId, iface.instanceId, hours]);
+  }, [apiBase, deviceId, sourceId, iface.instanceId, hours]);
 
   const points = useMemo(() => data?.points || [], [data]);
   const labels = useMemo(() => points.map((p) => fmtShortTime(p.at)), [points]);

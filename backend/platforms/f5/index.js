@@ -9,12 +9,12 @@ const express = require('express');
 const { query, param, validationResult } = require('express-validator');
 const { sendCsv: sendCsvRows } = require('../../utils/csv');
 const { createF5Advisor, REPORT_KEYS } = require('../../services/advisors/f5Advisor');
+const analytics = require('./analytics');
 
 const BRAND = '#E4002B';
 const VENDOR = 'f5';
 const CONNECTOR = 'logicmonitor';
 const SETTINGS_PATH = '/logicmonitor/settings?section=services';
-const CERT_DETAIL_CAP = 40;
 
 const p = (port, label, expect) => ({ port, label, expect });
 
@@ -74,28 +74,12 @@ const issuesWorstFirst = (list) => list.slice().sort((a, b) => sevRank(a.severit
 
 // ---- overview ----------------------------------------------------------------------------------------
 
-/** Certificates expiring inside 30 and 90 days (90 includes the 30). Uses the 360 detail of each
- *  BIG-IP / GTM device; a device whose detail fails falls back to its list-row certsExpiring. */
-function certCounts(coreApi, lbs, devs) {
-  // Load balancer rows carry no vendorKind, so F5OS (no SSL profiles) is skipped through the device list.
-  const f5os = new Set(devs.filter((d) => d.vendorKind === 'f5os').map((d) => `${d.sourceId}:${d.id}`));
-  let expiring30 = 0;
-  let expiring90 = 0;
-  for (const r of lbs.filter((x) => !f5os.has(`${x.sourceId}:${x.deviceId ?? x.id}`)).slice(0, CERT_DETAIL_CAP)) {
-    try {
-      const d = feed(coreApi, 'loadBalancer', { vendorKey: VENDOR, deviceId: r.deviceId ?? r.id, sourceId: r.sourceId });
-      for (const c of rowsOf(d && d.certs)) {
-        const days = Number(c.daysLeft);
-        if (!Number.isFinite(days)) continue;
-        if (days < 30) expiring30 += 1;
-        if (days < 90) expiring90 += 1;
-      }
-    } catch {
-      expiring30 += r.certsExpiring || 0;
-      expiring90 += r.certsExpiring || 0;
-    }
-  }
-  return { expiring30, expiring90 };
+/** Certificates expiring inside 30 and 90 days, deduped, from the certificates feed (one query). When the
+ *  feed is not registered yet the list rows' certsExpiring counts stand in (no per-device loop). */
+function certCounts(c, lbs) {
+  if (c.available) return { expiring30: c.expiring30, expiring90: c.expiring90, expired: c.buckets.expired, uniqueTotal: c.uniqueTotal, rawTotal: c.rawTotal };
+  const n = lbs.reduce((t, r) => t + (r.certsExpiring || 0), 0);
+  return { expiring30: n, expiring90: n, expired: null, uniqueTotal: null, rawTotal: null };
 }
 
 function buildOverview(coreApi) {
@@ -103,6 +87,7 @@ function buildOverview(coreApi) {
   const lbs = lbRowsOf(coreApi);
   const { issues } = issuesAnswer(coreApi);
   const alerts = alertsOf(coreApi);
+  const { tiles, certs } = analytics.buildTiles((name, params) => feed(coreApi, name, params));
 
   const count = (fn) => devs.filter(fn).length;
   const states = devs.map((d) => normState(d.state));
@@ -127,7 +112,8 @@ function buildOverview(coreApi) {
       ok: states.filter((s) => s === 'ok').length,
     },
     pools: { total: lbs.reduce((n, r) => n + (r.pools || 0), 0), degraded: lbs.reduce((n, r) => n + (r.poolsDegraded || 0), 0) },
-    certs: certCounts(coreApi, lbs, devs),
+    certs: certCounts(certs, lbs),
+    tiles,
     failover,
     daemons: { down: lbs.reduce((n, r) => n + (r.daemonsDown || 0), 0) },
     alerts: { critical: alertCount('critical'), warning: alertCount('warning') },
@@ -430,6 +416,29 @@ function createRouter(coreApi) {
     return res.json(rowsOf(feed(coreApi, 'issueHistory', params)));
   }));
 
+  // ---- Analytics (feeds only; every answer says whether its feed exists yet via `available`) ----
+  const qf = (name, params) => feed(coreApi, name, params);
+  const daysRule = query('days').optional().isInt({ min: 7, max: 365 }).toInt();
+  router.get('/ha', h((req, res) => res.json(analytics.buildHa(qf))));
+  router.get('/trends', [query('deviceId').optional().isInt().toInt(), query('sourceId').optional().isInt().toInt(), daysRule], validate,
+    h((req, res) => res.json(analytics.buildTrends(qf, { deviceId: req.query.deviceId, sourceId: req.query.sourceId, days: req.query.days || 30 }))));
+  // Daily series for the 360 range selector (7 / 30 / 90 days), served by the trendSeries feed.
+  router.get('/trends/series', [
+    query('deviceId').isInt().toInt(), query('sourceId').optional().isInt().toInt(), daysRule,
+    query('metric').isIn(['cpu_pct', 'mem_pct', 'client_connections', 'server_connections']),
+    query('agg').optional().isIn(['max', 'min', 'avg', 'last']),
+  ], validate, h((req, res) => {
+    const days = req.query.days || 30;
+    const r = analytics.tryFeed(qf, 'trendSeries', { sourceId: req.query.sourceId, deviceId: req.query.deviceId, metric: req.query.metric, days, agg: req.query.agg || 'max' }, []);
+    return res.json({ available: r.ok, metric: req.query.metric, days, agg: req.query.agg || 'max', points: analytics.rowsOf(r.value, 'points') });
+  }));
+  router.get('/pools', [query('deviceId').optional().isInt().toInt(), query('sourceId').optional().isInt().toInt()], validate,
+    h((req, res) => res.json(analytics.buildPools(qf, { deviceId: req.query.deviceId, sourceId: req.query.sourceId }))));
+  router.get('/certificates', h((req, res) => res.json(analytics.buildCertificates(qf))));
+  router.get('/gtm', [daysRule], validate, h((req, res) => res.json(analytics.buildGtm(qf, { days: req.query.days || 30 }))));
+  router.get('/stability', [daysRule], validate, h((req, res) => res.json(analytics.buildStability(qf, { days: req.query.days || 30 }))));
+  router.get('/fleet', [daysRule], validate, h((req, res) => res.json(analytics.buildFleet(qf, { days: req.query.days || 30 }))));
+
   // ---- AI Advisor (coreApi.advisor) ----
   const advisorKey = (slug) => String(slug).replace(/-/g, '_');
   router.get('/advisor/:report', [param('report').isString()], validate, h((req, res) => {
@@ -479,7 +488,7 @@ module.exports = {
   vendorKeys: [VENDOR],
   presence,
   createRouter,
-  navSections: ['overview', 'alerts', 'issues', 'devices', 'load-balancers', 'advisor', 'settings'],
+  navSections: ['overview', 'alerts', 'issues', 'devices', 'load-balancers', 'ha', 'trends', 'pools', 'certificates', 'gtm', 'stability', 'advisor', 'settings'],
   opsSummary,
   collectAlerts,
   searchCategories,

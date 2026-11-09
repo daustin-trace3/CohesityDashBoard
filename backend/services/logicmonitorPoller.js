@@ -1123,10 +1123,17 @@ async function hourlyWork(source) {
   const baselines = lmChecks.computeBaselines(db, source.id);
   const daily = lmChecks.rollupCheckDaily(db, source.id, utcDay(Date.now() - 86400000));
   try { fillDeviceAlertCounts(source.id); } catch (err) { logger.warn(`[LmPoller] device alert counts failed: ${err.message}`); }
+  // Trend findings (forecasts, creep, reboots, peer flaps, state changes, connection anomalies), rebuilt once an hour
+  // from the daily tables. Computed before its own short write transaction.
+  let trendRes = null;
+  try {
+    trendRes = require('./logicmonitorTrends').computeTrendFindings(db, { sourceId: source.id });
+    logger.info(`[LmPoller] ${source.name}: trend findings ${trendRes.written} written, ${trendRes.deleted} replaced in ${trendRes.ms} ms (${Object.entries(trendRes.byKind).map(([k, n]) => `${k} ${n}`).join(', ') || 'none'})`);
+  } catch (err) { logger.warn(`[LmPoller] trend findings failed: ${err.message}`); }
   // raw_json is kept for the first 24 h of a sample only (probe loop), then dropped.
   db.prepare("UPDATE lm_check_history SET raw_json = NULL WHERE source_id = ? AND raw_json IS NOT NULL AND captured_at < datetime('now', '-1 day')").run(source.id);
   db.prepare('UPDATE lm_sources SET last_hourly_at = ? WHERE id = ?').run(new Date().toISOString(), source.id);
-  return { baselines, daily };
+  return { baselines, daily, trends: trendRes ? { written: trendRes.written, ms: trendRes.ms } : null };
 }
 
 function dailyDue(source) {

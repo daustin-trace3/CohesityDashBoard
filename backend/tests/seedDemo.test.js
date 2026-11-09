@@ -31,7 +31,7 @@ beforeAll(() => {
   });
 
   db = new Database(dbPath, { readonly: true });
-}, 120000);
+}, 300000); // the full seed incl. the LM analytics stories and trend findings runs about 110 s alone, longer under the full suite
 
 afterAll(() => {
   if (db) db.close();
@@ -699,11 +699,11 @@ describe('seedDemo.js', () => {
     // 140 monitored devices plus the 2 LM Uptime ping-check devices (deviceType 19),
     // plus 6 nyc/lon switches (round 2: 1 dist + 2 access per site), plus 7 round 3
     // switches (abq-dist-01 with 3 access switches, 3 unassigned-sw-* in no site group).
-    expect(c('SELECT COUNT(*) c FROM lm_devices')).toBe(197); // 162 plus the 13 round 11 service devices (2 SBC, 2 CUBE, 1 GANC, 3 ZPA, 2 NSS, 3 ISE; WP-V) plus the 5 round 9 cloud circuits (3 Direct Connect, 2 ExpressRoute) plus the 2 round 10 Cohesity clusters plus the 3 round 11 application devices (Splunk, EMC Unity, IronPort; WP-X) plus the 12 round 11 server guests (6 Linux, 6 Windows vCenter VMs; WP-S)
+    expect(c('SELECT COUNT(*) c FROM lm_devices')).toBe(203); // 162 plus the 6 trend analytics BIG-IPs (phx-ltm, dal-ltm, phx-edge pairs) plus the 13 round 11 service devices (2 SBC, 2 CUBE, 1 GANC, 3 ZPA, 2 NSS, 3 ISE; WP-V) plus the 5 round 9 cloud circuits (3 Direct Connect, 2 ExpressRoute) plus the 2 round 10 Cohesity clusters plus the 3 round 11 application devices (Splunk, EMC Unity, IronPort; WP-X) plus the 12 round 11 server guests (6 Linux, 6 Windows vCenter VMs; WP-S)
     expect(c('SELECT COUNT(*) c FROM lm_devices WHERE device_type = 19')).toBe(2);
     expect(c('SELECT COUNT(*) c FROM lm_devices WHERE device_type = 2')).toBe(23);
     expect(c('SELECT COUNT(*) c FROM lm_devices WHERE device_type = 4')).toBe(2);
-    expect(c('SELECT COUNT(*) c FROM lm_devices WHERE is_network = 1')).toBe(83); // 80 plus the 2 round 11 CUBE routers (WP-V) plus 1 round 11 appliance (IronPort; WP-X)
+    expect(c('SELECT COUNT(*) c FROM lm_devices WHERE is_network = 1')).toBe(89); // 83 plus the 6 trend analytics BIG-IPs; 80 plus the 2 round 11 CUBE routers (WP-V) plus 1 round 11 appliance (IronPort; WP-X)
     expect(c("SELECT COUNT(*) c FROM lm_devices WHERE host_status = 'dead-collector'")).toBe(14);
     expect(c("SELECT COUNT(*) c FROM lm_devices WHERE host_status = 'dead' AND is_network = 1")).toBe(7);
     expect(c("SELECT COUNT(*) c FROM lm_devices WHERE vendor = 'Cisco' AND role = 'switch' AND version = '17.6.5'")).toBe(4);
@@ -720,7 +720,7 @@ describe('seedDemo.js', () => {
     expect(c("SELECT COUNT(*) c FROM lm_devices WHERE vendor_key = 'meraki' AND vendor_kind IS NOT 'other'")).toBeGreaterThan(0);
     expect(c('SELECT COUNT(*) c FROM lm_sdts')).toBe(7);
 
-    expect(c('SELECT COUNT(*) c FROM lm_interfaces')).toBe(2024);
+    expect(c('SELECT COUNT(*) c FROM lm_interfaces')).toBe(2054); // plus 30 ports on the 6 trend analytics BIG-IPs
     // 10 original down ports plus the six link-burst ports on dal-acc-01..03 (agent signals scenario).
     expect(c("SELECT COUNT(*) c FROM lm_interfaces WHERE status_text = 'down'")).toBe(16);
     expect(c("SELECT COUNT(*) c FROM lm_issue_history WHERE status = 'open' AND type = 'link-burst' AND target = 'dallas-dc' AND message LIKE '6 interfaces went down in the last 30 min on 3 devices%'")).toBe(1);
@@ -729,7 +729,7 @@ describe('seedDemo.js', () => {
     expect(ifHist).toBeGreaterThan(100000);
     expect(ifHist).toBeLessThan(150000);
     expect(c('SELECT COUNT(*) c FROM lm_interface_daily')).toBeGreaterThan(40000);
-    expect(c('SELECT COUNT(*) c FROM lm_device_datasources WHERE is_interface = 1')).toBe(67);
+    expect(c('SELECT COUNT(*) c FROM lm_device_datasources WHERE is_interface = 1')).toBe(73);
 
     expect(c('SELECT COUNT(*) c FROM lm_alerts WHERE cleared = 0')).toBe(120); // 118 plus the 2 round 10 Cohesity relay alerts
     expect(c('SELECT COUNT(*) c FROM lm_alerts WHERE cleared = 1')).toBe(400);
@@ -833,11 +833,15 @@ describe('seedDemo.js', () => {
       expect(q("= 'F5_GTM_WideIP-'")).toBe(10);
       expect(q("= 'F5_GTM_VIPs-'")).toBe(12);
       expect(q("LIKE 'f5\\_%\\_status' ESCAPE '\\'")).toBe(6);
-      expect(q("= 'F5_BigIP_SSL_VIP_Certs'")).toBe(8);
+      expect(q("= 'F5_BigIP_SSL_VIP_Certs'")).toBe(name.startsWith('phx-f5') ? 14 : 8); // the phx pair carries 6 more (3 expired, 3 under 30 days)
     }
     const fo = Object.fromEntries(db.prepare(`SELECT d.display_name n, m.value v FROM lm_ds_metrics m JOIN lm_devices d ON d.source_id = m.source_id AND d.lm_device_id = m.lm_device_id
       WHERE m.metric = 'failover_state'`).all().map((r) => [r.n, r.v]));
-    expect(fo).toEqual({ 'phx-f5-01': 4, 'phx-f5-02': 3, 'dal-f5-01': 4, 'dal-f5-02': 3 });
+    // The four original F5s plus the trend analytics pairs: phx-ltm both active, dal-ltm neither active, phx-edge asymmetric.
+    expect(fo).toEqual({
+      'phx-f5-01': 4, 'phx-f5-02': 3, 'dal-f5-01': 4, 'dal-f5-02': 3,
+      'phx-ltm-01': 4, 'phx-ltm-02': 4, 'dal-ltm-01': 3, 'dal-ltm-02': 3, 'phx-edge-01': 4, 'phx-edge-02': 3,
+    });
 
     // The scenarios surface as open issues, and nothing else from the new rules.
     const open = db.prepare("SELECT type, severity, target FROM lm_issue_history WHERE status = 'open'").all();
@@ -848,7 +852,12 @@ describe('seedDemo.js', () => {
     expect(open.filter((i) => i.type === 'fw-tunnel-down').every((i) => i.target.startsWith('dal-fw-01 '))).toBe(true);
     expect(of('fw-config-unsynced')).toEqual(['info:den-fw-01']);
     expect(of('lb-pool-degraded')).toEqual(['critical:dal-f5-01 app-payments', 'warning:dal-f5-01 web-portal']);
-    expect(of('lb-cert-expiring')).toEqual(['warning:phx-f5-01 pay.acme-example.com']);
+    // pay (12 days) plus the trend analytics certificates on both phx units: 3 expired, vpn 8, mail 21, sso2 27 days.
+    expect(of('lb-cert-expiring').filter((i) => i.includes('phx-f5-01'))).toEqual([
+      'critical:phx-f5-01 legacy-a.acme-example.com', 'critical:phx-f5-01 legacy-b.acme-example.com', 'critical:phx-f5-01 old-portal.acme-example.com',
+      'warning:phx-f5-01 mail.acme-example.com', 'warning:phx-f5-01 pay.acme-example.com', 'warning:phx-f5-01 sso2.acme-example.com', 'warning:phx-f5-01 vpn.acme-example.com',
+    ]);
+    expect(of('lb-cert-expiring').filter((i) => !i.includes('phx-f5-0'))).toEqual([]);
     expect(of('hardware-fault')).toEqual(['warning:dal-dist-02 Power Supply 2']);
     expect(of('bgp-peer-down')).toHaveLength(1);
     expect(of('bgp-peer-down')[0]).toMatch(/^warning:dal-wan-rtr-02 /);
@@ -860,6 +869,23 @@ describe('seedDemo.js', () => {
     expect(hist).toHaveLength(336);
     expect(hist[hist.length - 1]).toBe(87);
     expect(hist[hist.length - 12]).toBeLessThan(70);
+  });
+
+  it('seeds the logicmonitor trend findings by running the engine over the seeded daily tables (every kind, the analytics stories)', () => {
+    const c = (sql, ...args) => db.prepare(sql).get(...args).c;
+    const kinds = db.prepare('SELECT DISTINCT kind FROM lm_trend_findings').all().map((r) => r.kind).sort();
+    expect(kinds).toEqual(['conn_anomaly', 'cpu_forecast', 'fs_forecast', 'if_util_forecast', 'mem_creep', 'optic_margin', 'peer_flap', 'poe_forecast', 'reboot', 'state_change', 'thermal_trend']);
+    // Two Rx margins under 2 dB and one falling; BGP peer flapping; PoE 88 percent rising; two reboots on one device.
+    expect(c("SELECT COUNT(*) c FROM lm_trend_findings WHERE kind = 'optic_margin' AND value < 2")).toBe(2);
+    expect(c("SELECT COUNT(*) c FROM lm_trend_findings WHERE kind = 'optic_margin' AND slope_per_day < -0.1")).toBe(1);
+    expect(c("SELECT COUNT(*) c FROM lm_trend_findings WHERE kind = 'peer_flap' AND severity = 'warning'")).toBe(1);
+    expect(c("SELECT COUNT(*) c FROM lm_trend_findings WHERE kind = 'poe_forecast' AND severity = 'critical'")).toBe(1);
+    expect(db.prepare("SELECT value v FROM lm_trend_findings WHERE kind = 'reboot' ORDER BY value DESC").get().v).toBe(2);
+    expect(c("SELECT COUNT(*) c FROM lm_trend_findings WHERE kind = 'mem_creep'")).toBe(1);
+    // The F5 CPU unit that reaches 80 percent in about 25 days.
+    const cpu = db.prepare("SELECT days_to_threshold d FROM lm_trend_findings f JOIN lm_devices v ON v.lm_device_id = f.lm_device_id AND v.source_id = f.source_id WHERE f.kind = 'cpu_forecast' AND v.display_name = 'phx-edge-01'").get();
+    expect(cpu.d).toBeGreaterThan(20);
+    expect(cpu.d).toBeLessThan(30);
   });
 
   it('seeds the logicmonitor round 3 scenarios (sites, shadowing, circuits, anomalies, backup windows, webhook, data quality)', async () => {

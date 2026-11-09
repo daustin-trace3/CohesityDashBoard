@@ -158,7 +158,7 @@ describe('overview', () => {
   it('serves GET /overview with the contract keys', async () => {
     const res = await request(appFor(fakeCoreApi())).get('/api/cisco/overview');
     expect(res.status).toBe(200);
-    expect(Object.keys(res.body).sort()).toEqual(['alerts', 'devices', 'devicesWorstFirst', 'firewalls', 'generatedAt', 'ise', 'issues', 'sources', 'topIssues', 'voice', 'wireless']);
+    expect(Object.keys(res.body).sort()).toEqual(['alerts', 'devices', 'devicesWorstFirst', 'firewalls', 'generatedAt', 'ise', 'issues', 'sources', 'tiles', 'topIssues', 'voice', 'wireless']);
   });
 
   it('still answers when the family feeds are not registered yet (zero figures)', async () => {
@@ -209,7 +209,7 @@ describe('device routes', () => {
     const app = appFor(fakeCoreApi());
     const ok = await request(app).get('/api/cisco/devices/3?sourceId=1');
     expect(ok.status).toBe(200);
-    expect(Object.keys(ok.body).sort()).toEqual(['alerts', 'datasources', 'device', 'health', 'metrics']);
+    expect(Object.keys(ok.body).sort()).toEqual(['alerts', 'datasources', 'device', 'health', 'metrics', 'resources']);
     expect(ok.body.device.displayName).toBe('asa-a');
     expect(ok.body.alerts.map((a) => a.id)).toEqual(['a1']);
     const meraki = await request(app).get('/api/cisco/devices/5');
