@@ -69,7 +69,7 @@ const COVERAGE = Object.freeze({
     events: ['hyperv_events', 'hyperv_issue_history'],
   },
   netbackup: { trending: ['netbackup_workload_history', 'netbackup_metrics_history'], events: ['netbackup_issue_history'] },
-  proxmox: { trending: [], events: ['proxmox_issue_history'] },
+  proxmox: { trending: [], events: ['proxmox_issue_history', 'proxmox_events', 'proxmox_tasks'] },
   // Cross-platform rows follow the global values only (no override row in the UI).
   icc: { trending: ['service_status_timeline', 'service_group_status_timeline'], events: ['service_alert_events', 'service_alert_analyses'] },
 });
