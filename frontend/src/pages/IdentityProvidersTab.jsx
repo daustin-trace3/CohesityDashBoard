@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Fingerprint, Plus, Pencil, Trash2, X, Copy, Check, RefreshCw, ShieldCheck } from 'lucide-react';
 import client from '../api/client';
 import DirectoryTab from './DirectoryTab';
+import { Drawer, btnPrimary, btnPlain } from './idpShared';
 import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import { copyText } from '../utils/clipboard';
@@ -23,9 +24,6 @@ function fmtWhen(v) {
   const d = new Date(s);
   return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleString();
 }
-
-const btnPrimary = 'flex items-center justify-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-40 cursor-pointer';
-const btnPlain = 'flex items-center justify-center gap-1.5 text-xs font-medium px-3.5 py-2 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:bg-surface-overlay transition-colors disabled:opacity-40 cursor-pointer';
 
 const OIDC_SETUP = [
   'In Okta Admin, Applications > Create App Integration > OIDC, Web Application.',
@@ -95,23 +93,6 @@ function buildBody(f, isNew) {
   if (f.clearSpKey) body.spKeyPem = null;
   else if (f.spKeyPem) body.spKeyPem = f.spKeyPem;
   return body;
-}
-
-/* Modal shell, wide */
-function Drawer({ title, onClose, children }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
-      <div className="relative bg-cohesity-gray border border-cohesity-border rounded-lg w-full max-w-3xl max-h-[92vh] flex flex-col shadow-xl animate-fade-in">
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-cohesity-border flex-shrink-0">
-          <p className="text-sm font-bold text-ink">{title}</p>
-          <button onClick={onClose} aria-label="Close" className="text-ink-faint hover:text-ink cursor-pointer"><X size={16} /></button>
-        </div>
-        <div className="px-5 py-4 overflow-y-auto">{children}</div>
-      </div>
-    </div>
-  );
 }
 
 function CopyRow({ label, value }) {
