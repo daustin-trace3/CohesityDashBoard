@@ -43,7 +43,6 @@ export default function AdminSettingsPage() {
   const [switcherMode, setSwitcherModeState] = useState(getSwitcherMode);
   const [opsOverviewStyle, setOpsOverviewStyle] = useState('classic');
   const [dnsServer, setDnsServer] = useState('');
-  const [cohesityAlertWindowDays, setCohesityAlertWindowDays] = useState(5);
   const [cohesityRunHistoryDays, setCohesityRunHistoryDays] = useState(90);
   const [cohesityRunRetentionDays, setCohesityRunRetentionDays] = useState(0);
   const [netbackupJobHistoryDays, setNetbackupJobHistoryDays] = useState(30);
@@ -72,7 +71,6 @@ export default function AdminSettingsPage() {
         const d = s.value.data;
         setOpsOverviewStyle(d.opsOverviewStyle || 'classic');
         setDnsServer(d.dnsServer || '');
-        setCohesityAlertWindowDays(d.cohesityAlertWindowDays ?? 5);
         setCohesityRunHistoryDays(d.cohesityRunHistoryDays ?? 90);
         setCohesityRunRetentionDays(d.cohesityRunRetentionDays ?? 0);
         setNetbackupJobHistoryDays(d.netbackupJobHistoryDays ?? 30);
@@ -88,7 +86,6 @@ export default function AdminSettingsPage() {
       await client.put('/settings', {
         opsOverviewStyle,
         dnsServer,
-        cohesityAlertWindowDays: Number(cohesityAlertWindowDays) || 0,
         cohesityRunHistoryDays: Math.min(365, Math.max(30, Number(cohesityRunHistoryDays) || 90)),
         cohesityRunRetentionDays: (Number(cohesityRunRetentionDays) || 0) === 0 ? 0 : Math.min(3650, Math.max(30, Number(cohesityRunRetentionDays))),
         netbackupJobHistoryDays: Math.min(365, Math.max(7, Number(netbackupJobHistoryDays) || 30)),
@@ -269,15 +266,6 @@ export default function AdminSettingsPage() {
                 className="w-full max-w-xs bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none tnum" />
             </div>
 
-            <div className="pt-2 border-t border-cohesity-border/60">
-              <label htmlFor="cohesity-alert-window" className="block text-xs font-semibold text-ink mb-1 mt-2">Cohesity alert window (days)</label>
-              <p className="text-[11px] text-ink-muted mb-2 leading-relaxed">
-                A Cohesity alert counts only while it has fired within this many days. Older open alerts that nobody resolved on the cluster drop off every page at the next poll, and come back if they fire again. 0 keeps every open alert.
-              </p>
-              <input id="cohesity-alert-window" type="number" min="0" max="365" step="1" value={cohesityAlertWindowDays}
-                onChange={e => setCohesityAlertWindowDays(e.target.value)}
-                className="w-full max-w-[10rem] bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none tnum" />
-            </div>
 
             <div className="pt-2 border-t border-cohesity-border/60">
               <SettingRow label="Cohesity run history (days)" htmlFor="cohesity-run-history"

@@ -67,6 +67,58 @@ function WatchdogPanel() {
   );
 }
 
+/** Cohesity alert window: how long an unresolved alert keeps counting. Shared
+ *  setting (cohesity_alert_window_days), saved through PUT /settings. */
+function AlertWindowPanel() {
+  const { toast } = useToast();
+  const [days, setDays] = useState('5');
+  const [saved, setSaved] = useState('5');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    client.get('/settings').then(({ data }) => {
+      const v = String(data.cohesityAlertWindowDays ?? 5);
+      setDays(v); setSaved(v);
+    }).catch(() => {});
+  }, []);
+
+  const save = async () => {
+    const n = Number(days);
+    if (!(n >= 0 && n <= 365)) { toast({ type: 'error', title: 'Alert window', message: 'Enter 0 to 365 days.' }); return; }
+    setSaving(true);
+    try {
+      await client.put('/settings', { cohesityAlertWindowDays: Math.round(n) });
+      setSaved(String(Math.round(n)));
+      toast({ type: 'success', title: 'Alert window saved', message: n === 0 ? 'Every open alert counts.' : `Alerts count for ${Math.round(n)} days after they fire.` });
+    } catch {
+      toast({ type: 'error', title: 'Save failed', message: 'Could not save the alert window.' });
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="panel p-4 mb-4">
+      <p className="text-sm font-bold text-ink">Alert window</p>
+      <p className="text-[11px] text-ink-muted mt-0.5 leading-relaxed max-w-xl">
+        A Cohesity alert counts only while it has fired within this many days. Older open alerts that
+        nobody resolved on the cluster drop off every page at the next poll, and come back if they fire
+        again. 0 keeps every open alert. Applies to the Alerts page, Service Status, the Ops Agent and
+        the email notifications below.
+      </p>
+      <div className="flex flex-wrap items-center gap-3 mt-3">
+        <label htmlFor="cohesity-alert-window" className="text-sm text-ink">Days</label>
+        <input id="cohesity-alert-window" type="number" min="0" max="365" step="1" value={days}
+          onChange={(e) => setDays(e.target.value)}
+          className="bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-1.5 text-sm text-ink focus:border-brand/60 outline-none w-28 tnum" />
+        <span className="text-[11px] text-ink-faint">0 to 365, default 5</span>
+        <button onClick={save} disabled={saving || days === saved}
+          className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-brand/10 border border-brand/30 text-brand hover:bg-brand/20 transition-colors cursor-pointer disabled:opacity-50">
+          {saving ? 'Saving...' : 'Save'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** Manual poll triggers — whole estate or a single cluster. */
 function PollingTab() {
   const { toast } = useToast();
@@ -224,7 +276,7 @@ export default function SettingsPage() {
       {tab === 'polling' && <><PollingTab /><WatchdogPanel /></>}
 
       {/* Alert Notifications */}
-      {tab === 'alerts' && <PlatformAlertNotifications platform="cohesity" label="Cohesity" />}
+      {tab === 'alerts' && <><AlertWindowPanel /><PlatformAlertNotifications platform="cohesity" label="Cohesity" /></>}
 
       {/* Licensing entitlement */}
       {tab === 'entitlement' && (
