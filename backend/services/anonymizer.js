@@ -321,6 +321,15 @@ function loadDictionary() {
       add(db.prepare("SELECT DISTINCT full_path AS name FROM lm_device_groups WHERE full_path IS NOT NULL AND full_path != ''").all(), 'SOURCE');
       add(db.prepare("SELECT DISTINCT site_name AS name FROM lm_sites WHERE site_name IS NOT NULL AND site_name != ''").all(), 'SOURCE');
       add(db.prepare("SELECT DISTINCT site_key AS name FROM lm_sites WHERE site_key IS NOT NULL AND site_key != ''").all(), 'SOURCE');
+      // Operator-picked service labels (app_settings lm_service_groups) are free text that may
+      // name an application; they reach the Estate Advisor and the Ops Agent as service names.
+      try {
+        const rawServices = db.prepare("SELECT value FROM app_settings WHERE key = 'lm_service_groups'").get();
+        const picks = rawServices && rawServices.value ? JSON.parse(rawServices.value) : [];
+        if (Array.isArray(picks)) {
+          add(picks.filter((p) => p && typeof p.label === 'string' && p.label.trim()).map((p) => ({ name: p.label.trim() })), 'SOURCE');
+        }
+      } catch { /* unreadable picks: labels fall back to the group-name entries above */ }
       add(db.prepare("SELECT DISTINCT name FROM lm_checks WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
       add(db.prepare("SELECT DISTINCT target AS name FROM lm_checks WHERE target IS NOT NULL AND target != ''").all(), 'OBJECT');
       add(db.prepare("SELECT DISTINCT username AS name FROM lm_admins WHERE username IS NOT NULL AND username != ''").all(), 'USER');
