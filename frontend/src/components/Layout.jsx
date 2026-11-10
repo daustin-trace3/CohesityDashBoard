@@ -74,6 +74,8 @@ export default function Layout() {
   const [apiOnline, setApiOnline] = useState(true);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === '1');
   // Pure/NetApp tabs stay hidden until enabled in Settings → Platforms.
+  // True once GET /platforms answered (or failed), so the landing redirect never acts on the default list.
+  const [platformsLoaded, setPlatformsLoaded] = useState(false);
   const [enabledPlatformIds, setEnabledPlatformIds] = useState(['cohesity']);
   // Derived platforms (F5) have no sources of their own: they appear while the
   // connector (LogicMonitor) has matching devices. Ids of those that are on and present.
@@ -564,7 +566,8 @@ export default function Layout() {
         ...derivedRows.map(d => d.id),
         ]);
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setPlatformsLoaded(true));
     loadPlatforms();
     // SettingsPage fires this after saving so the tabs update without a reload.
     window.addEventListener('platforms-changed', loadPlatforms);
@@ -903,7 +906,7 @@ export default function Layout() {
         {/* Page content */}
         <main className="px-5 py-4 flex-1 overflow-auto">
           <UpdateBanner />
-          <Outlet />
+          <Outlet context={{ visiblePlatforms, platformsLoaded }} />
         </main>
       </div>
     </div>

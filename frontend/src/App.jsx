@@ -2,6 +2,7 @@ import { useState, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import DataProtectionPage from './pages/DataProtectionPage';
+import LandingRedirect from './pages/LandingRedirect';
 import AnalyticsPage from './pages/AnalyticsPage';
 import ReportingPage from './pages/ReportingPage';
 import LicensingPage from './pages/LicensingPage';
@@ -50,7 +51,7 @@ function AppRoutes() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/" element={<Layout />}>
-          <Route index element={<Navigate to="/ops" replace />} />
+          <Route index element={<LandingRedirect />} />
           <Route path="ops" element={withBoundary(<OpsMonitorPage />)} />
           <Route path="ops/server360" element={withBoundary(<ServerStatusPage />)} />
           <Route path="ops/topology" element={withBoundary(<TopologyPage />)} />

@@ -25,7 +25,7 @@ export default function LoginPage() {
   const { login, refresh } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const returnTo = searchParams.get('returnTo') || '/cohesity';
+  const returnTo = searchParams.get('returnTo') || '/';
 
   const [checkingSetup, setCheckingSetup] = useState(true);
   const [health, setHealth] = useState(null); // null = checking, true/false = result
