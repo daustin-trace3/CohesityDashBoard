@@ -755,26 +755,30 @@ function refreshTypeCatalog(platform) {
   // Fallback for the rare row whose stored timestamps didn't resolve to
   // anything - same 'YYYY-MM-DD HH:MM:SS' UTC text datetime('now') writes.
   const now = db.prepare("SELECT datetime('now') AS now").get().now;
-  const run_ = db.transaction((platformList) => {
-    for (const p of platformList) {
-      const query = CATALOG_BACKFILL[p];
-      if (!query) continue;
-      let rows;
-      try {
-        rows = query();
-      } catch (err) {
+  // The catalog queries scan every alert and issue table; they run BEFORE the
+  // write transaction so the single SQLite writer is held only for the upserts
+  // (24 s of held lock on the CG box, 2026-11-10, stalled every web request).
+  const batches = [];
+  for (const p of platforms) {
+    const query = CATALOG_BACKFILL[p];
+    if (!query) continue;
+    try {
+      batches.push([p, query()]);
+    } catch (err) {
         // Expected on an install/branch without this platform's table(s) -
         // debug only, not warn, so it doesn't repeat every 5 minutes.
         logger.debug(`[AlertNotifier] Type-catalog backfill skipped for ${p}: ${err.message}`);
-        continue;
-      }
+    }
+  }
+  const run_ = db.transaction((list) => {
+    for (const [p, rows] of list) {
       for (const r of rows) {
         if (!r.type) continue;
         upsert.run(p, r.type, r.typeLabel || r.type, r.firstSeen || now, r.lastSeen || now);
       }
     }
   });
-  run_(platforms);
+  run_(batches);
 }
 
 /** Core run loop, shared by the cron job and any manual trigger. */

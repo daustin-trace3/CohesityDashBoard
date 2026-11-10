@@ -261,9 +261,9 @@ describe('/api/system/health', () => {
     expect(getSetting('icc_health_db_refresh_requested') || '').toBe('');
   });
 
-  it('the sweep writes a snapshot and clears a pending refresh request', () => {
+  it('the sweep writes a snapshot and clears a pending refresh request', async () => {
     setSetting('icc_health_db_refresh_requested', new Date().toISOString());
-    systemHealth.sweepTick();
+    await systemHealth.sweepTick();
     const snap = JSON.parse(getSetting('icc_health_db_snapshot'));
     expect(snap.tables.length).toBeGreaterThan(10);
     expect(getSetting('icc_health_db_refresh_requested') || '').toBe('');

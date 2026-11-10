@@ -57,6 +57,16 @@ function createSession(userId) {
   return { id, csrfToken };
 }
 
+// A session is "touched" on every authenticated request. Writing last_seen_at
+// each time costs a write lock per page load, and on a busy install that write
+// queued behind the poller's transactions for seconds (CG box, 2026-11-10). The
+// stamp is only ever read by people, so once a minute is plenty.
+const TOUCH_EVERY_MS = 60000;
+function seenRecently(lastSeenAt, nowMs) {
+  const t = Date.parse(lastSeenAt || '');
+  return Number.isFinite(t) && nowMs - t < TOUCH_EVERY_MS;
+}
+
 /**
  * Validates a session id, lazily deleting it if expired or its user was
  * deactivated/removed. Sliding refresh extends expiry back to +7d once
@@ -86,7 +96,7 @@ function validateSession(sessionId) {
     const newExpiresAt = new Date(now.getTime() + SESSION_TTL_MS);
     db.prepare('UPDATE auth_sessions SET expires_at = ?, last_seen_at = ? WHERE id = ?')
       .run(newExpiresAt.toISOString(), now.toISOString(), sessionId);
-  } else {
+  } else if (!seenRecently(session.last_seen_at, now.getTime())) {
     db.prepare('UPDATE auth_sessions SET last_seen_at = ? WHERE id = ?').run(now.toISOString(), sessionId);
   }
 
