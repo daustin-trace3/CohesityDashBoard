@@ -34,18 +34,31 @@ function runMigrations(db, scope, steps) {
     .filter((s) => s.version > maxApplied)
     .sort((a, b) => a.version - b.version);
 
-  const recordApplied = db.prepare(
-    'INSERT INTO schema_migrations (scope, version, applied_at) VALUES (?, ?, ?)'
+  // Two processes (web and poller) boot at the same time after a pull and both
+  // see the same pending list. Each step therefore re-checks its own row inside
+  // the write lock and records itself with INSERT OR IGNORE, so the loser of the
+  // race skips the step instead of failing on the primary key (seen on the CG
+  // box 2026-11-09, logicmonitor v17).
+  const isApplied = db.prepare(
+    'SELECT 1 FROM schema_migrations WHERE scope = ? AND version = ?'
   );
+  const recordApplied = db.prepare(
+    'INSERT OR IGNORE INTO schema_migrations (scope, version, applied_at) VALUES (?, ?, ?)'
+  );
+
+  const applyStep = (step) => {
+    if (isApplied.get(scope, step.version)) return;
+    step.up(db);
+    recordApplied.run(scope, step.version, new Date().toISOString());
+  };
 
   for (const step of pending) {
     try {
       if (step.noTransaction) {
-        step.up(db);
+        applyStep(step);
       } else {
-        db.transaction(() => step.up(db))();
+        db.transaction(() => applyStep(step)).immediate();
       }
-      recordApplied.run(scope, step.version, new Date().toISOString());
     } catch (err) {
       const wrapped = new Error(`[migrations] ${scope} v${step.version}: ${err.message}`);
       wrapped.cause = err;
