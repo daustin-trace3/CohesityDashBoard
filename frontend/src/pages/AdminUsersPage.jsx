@@ -1,7 +1,8 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Users, UserPlus, Shield, KeyRound, Pencil, Trash2, Plus, X, Copy, Check, Power, ChevronDown, ChevronRight, Fingerprint } from 'lucide-react';
 import client from '../api/client';
 import { PageHeader, Badge, LastUpdated } from '../components/ui/primitives';
+import { useTableControls, TableSearch, TablePager } from '../components/ui/tableTools';
 import { useToast } from '../components/ui/Toaster';
 import { useAuth } from '../auth/AuthContext';
 import { usePlatforms } from '../platforms/PlatformsContext';
@@ -550,13 +551,20 @@ function UsersTab() {
     }
   };
 
+  // Search and paging over the loaded list (a directory sync can add hundreds of rows at once).
+  const userRows = useMemo(() => (users || []).map((u) => ({ ...u, groupText: (u.groups || []).join(', ') })), [users]);
+  const ctl = useTableControls(userRows, { searchKeys: ['username', 'displayName', 'email', 'domain', 'groupText', 'provider'], paginate: true, defaultPageSize: 10, deepLink: false });
+
   if (error) return <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2">{error}</p>;
   if (!users) return <p className="text-xs text-ink-faint">Loading…</p>;
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-ink-muted">{users.length} user{users.length !== 1 ? 's' : ''}</p>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <p className="text-xs text-ink-muted whitespace-nowrap">{ctl.q ? `${ctl.rows.length} of ${users.length}` : users.length} user{users.length !== 1 ? 's' : ''}</p>
+          <TableSearch ctl={ctl} placeholder="Search users..." className="w-64" />
+        </div>
         <button onClick={() => setModalUser(null)}
           className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors cursor-pointer">
           <UserPlus size={13} /> Create user
@@ -577,7 +585,7 @@ function UsersTab() {
             </tr>
           </thead>
           <tbody>
-            {users.map(u => (
+            {ctl.pageRows.map(u => (
               <tr key={u.id} className="border-b border-cohesity-border/50 last:border-0 hover:bg-surface-overlay/50">
                 <td className="px-3 py-2 text-ink font-medium">
                   <span className="flex items-center gap-1.5">{u.username}{u.provider === 'ad' && <Badge tone="info">AD</Badge>}{(u.provider === 'oidc' || u.provider === 'saml') && <ProviderBadge providerId={u.idpProviderId} providers={idpProviders} />}</span>
@@ -600,10 +608,14 @@ function UsersTab() {
               </tr>
             ))}
             {users.length === 0 && (
-              <tr><td colSpan={6} className="px-3 py-6 text-center text-ink-faint">No users yet.</td></tr>
+              <tr><td colSpan={7} className="px-3 py-6 text-center text-ink-faint">No users yet.</td></tr>
+            )}
+            {users.length > 0 && ctl.rows.length === 0 && (
+              <tr><td colSpan={7} className="px-3 py-6 text-center text-ink-faint">No user matches the search.</td></tr>
             )}
           </tbody>
         </table>
+        <div className="px-3 pb-2"><TablePager ctl={ctl} sizes={[10, 25, 50, 100, 'all']} /></div>
       </div>
       {modalUser !== undefined && (
         <UserModal user={modalUser} groups={groups} onClose={() => setModalUser(undefined)} onSaved={load} />
