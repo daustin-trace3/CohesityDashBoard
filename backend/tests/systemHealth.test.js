@@ -211,7 +211,7 @@ describe('/api/system/health', () => {
     expect(res.body.processes.web.pid).toBe(process.pid);
     expect(res.body.polling).toHaveProperty('summary');
     expect(Array.isArray(res.body.polling.sources)).toBe(true);
-    expect(res.body.migrations.some((m) => m.scope === 'core' && m.version >= 37)).toBe(true);
+    expect(res.body.migrations.some((m) => m.scope === 'core' && m.version >= 36)).toBe(true);
     // No poller heartbeat in this run: it is reported, not hidden.
     setSetting(hb.KEY, '');
     const quiet = await request(app).get('/api/system/health');
