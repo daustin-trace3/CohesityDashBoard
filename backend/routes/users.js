@@ -5,6 +5,8 @@ const express = require('express');
 const crypto = require('crypto');
 const db = require('../db/database');
 const { hashPassword } = require('../services/authService');
+const directory = require('../services/directory');
+const idpProviders = require('../services/idpProviders');
 
 const router = express.Router();
 
@@ -35,7 +37,39 @@ function isInAdminGroup(userId) {
   return !!row;
 }
 
-function toUserRow(user) {
+function hostOf(url) {
+  try { return new URL(String(url)).hostname.toLowerCase() || null; } catch { return null; }
+}
+
+/**
+ * Where the account lives, for the Users list: 'local', the Active Directory
+ * domain (from the UPN, else the configured domain), or the identity
+ * provider's host (issuer for OpenID Connect, sign-on URL for SAML).
+ */
+function userDomain(user, providerCache) {
+  const provider = user.auth_provider || 'local';
+  if (provider === 'local') return 'local';
+  if (provider === 'ad') {
+    const upn = String(user.upn || '');
+    if (upn.includes('@')) return upn.split('@').pop().toLowerCase();
+    try { return directory.getConfig().domain || 'ad'; } catch { return 'ad'; }
+  }
+  if (provider === 'oidc' || provider === 'saml') {
+    const id = user.idp_provider_id;
+    if (!id) return provider;
+    if (!providerCache.has(id)) {
+      let row = null;
+      try { row = idpProviders.getProvider(id); } catch { row = null; }
+      providerCache.set(id, row);
+    }
+    const row = providerCache.get(id);
+    if (!row) return provider;
+    return hostOf(row.issuer) || hostOf(row.idp_sso_url) || hostOf(row.mgmt_base_url) || row.name || provider;
+  }
+  return provider;
+}
+
+function toUserRow(user, providerCache = new Map()) {
   const groups = db.prepare(`
     SELECT g.name FROM groups g
     JOIN user_groups ug ON ug.group_id = g.id
@@ -50,6 +84,7 @@ function toUserRow(user) {
     provider: user.auth_provider || 'local',
     email: user.email || null,
     idpProviderId: user.idp_provider_id || null,
+    domain: userDomain(user, providerCache),
     groups,
     lastLoginAt: user.last_login_at,
   };
@@ -71,7 +106,8 @@ function setUserGroups(userId, groupIds) {
 
 router.get('/', (req, res) => {
   const users = db.prepare('SELECT * FROM users ORDER BY username').all();
-  res.json(users.map(toUserRow));
+  const providerCache = new Map();
+  res.json(users.map((u) => toUserRow(u, providerCache)));
 });
 
 router.post('/', async (req, res, next) => {

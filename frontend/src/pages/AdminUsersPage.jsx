@@ -568,6 +568,7 @@ function UsersTab() {
           <thead>
             <tr className="border-b border-cohesity-border text-ink-faint text-[10px] uppercase tracking-wider">
               <th className="text-left px-3 py-2 font-semibold">Username</th>
+              <th className="text-left px-3 py-2 font-semibold">Domain</th>
               <th className="text-left px-3 py-2 font-semibold">Display name</th>
               <th className="text-left px-3 py-2 font-semibold">Groups</th>
               <th className="text-left px-3 py-2 font-semibold">Active</th>
@@ -581,6 +582,7 @@ function UsersTab() {
                 <td className="px-3 py-2 text-ink font-medium">
                   <span className="flex items-center gap-1.5">{u.username}{u.provider === 'ad' && <Badge tone="info">AD</Badge>}{(u.provider === 'oidc' || u.provider === 'saml') && <ProviderBadge providerId={u.idpProviderId} providers={idpProviders} />}</span>
                 </td>
+                <td className="px-3 py-2 text-ink-muted font-mono text-[11px]">{u.domain || (u.provider === 'local' ? 'local' : u.provider)}</td>
                 <td className="px-3 py-2 text-ink-muted">{u.displayName || '—'}</td>
                 <td className="px-3 py-2 text-ink-muted">{(u.groups || []).join(', ') || '—'}</td>
                 <td className="px-3 py-2">
