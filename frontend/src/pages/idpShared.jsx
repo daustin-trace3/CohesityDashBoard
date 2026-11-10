@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 
 // Shared pieces of the Users & Access > Identity providers tab, used by the
@@ -8,7 +9,7 @@ export const btnPlain = 'flex items-center justify-center gap-1.5 text-xs font-m
 
 /* Modal shell, wide */
 export function Drawer({ title, onClose, children }) {
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
@@ -19,6 +20,7 @@ export function Drawer({ title, onClose, children }) {
         </div>
         <div className="px-5 py-4 overflow-y-auto">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

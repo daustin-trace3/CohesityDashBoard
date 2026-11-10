@@ -65,7 +65,9 @@ describe('AdminSettingsPage — Alert Notifications tab', () => {
     fireEvent.click(screen.getByText('Alert Notifications'));
     await waitFor(() => expect(client.get).toHaveBeenCalledWith('/settings/notifications'));
     expect(await screen.findByDisplayValue('smtp.example.com')).toBeInTheDocument();
-    expect(screen.getByDisplayValue('ops@example.com')).toBeInTheDocument();
+    // Recipients live on the second tab since the 2026-11-09 tabs round.
+    fireEvent.click(screen.getByRole('tab', { name: /Recipients and filtering/ }));
+    expect(await screen.findByDisplayValue('ops@example.com')).toBeInTheDocument();
   });
 
   it('Save PUTs without smtpPassword when the password field is untouched', async () => {
@@ -73,7 +75,9 @@ describe('AdminSettingsPage — Alert Notifications tab', () => {
     fireEvent.click(screen.getByText('Alert Notifications'));
     await screen.findByDisplayValue('smtp.example.com');
 
-    fireEvent.click(screen.getByText('Save settings'));
+    // Save is disabled until a relay field changes; change the host, not the password.
+    fireEvent.change(screen.getByDisplayValue('smtp.example.com'), { target: { value: 'smtp2.example.com' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
 
     await waitFor(() => expect(client.put).toHaveBeenCalledWith('/settings/notifications', expect.not.objectContaining({ smtpPassword: expect.anything() })));
   });
@@ -84,7 +88,7 @@ describe('AdminSettingsPage — Alert Notifications tab', () => {
     await screen.findByDisplayValue('smtp.example.com');
 
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'new-secret' } });
-    fireEvent.click(screen.getByText('Save settings'));
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
 
     await waitFor(() => expect(client.put).toHaveBeenCalledWith('/settings/notifications', expect.objectContaining({ smtpPassword: 'new-secret' })));
   });
