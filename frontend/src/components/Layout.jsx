@@ -539,7 +539,8 @@ export default function Layout() {
   }, [platformKey]);
 
   useEffect(() => {
-    const loadPlatforms = () => client.get('/settings')
+    // /platforms is open to every signed-in user; /settings needs admin:settings:view.
+    const loadPlatforms = () => client.get('/platforms')
       .then(r => {
         return r;
       })

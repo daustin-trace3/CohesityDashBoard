@@ -2,13 +2,15 @@
 // analysis. Reachable to any authenticated caller, same as /api/ops.
 const express = require('express');
 const svc = require('../services/serviceStatus');
+const { filterByGrants, grantsOf, canViewPlatform } = require('../services/platformAccess');
 
 const router = express.Router();
 
 router.get('/board', (req, res, next) => {
   try {
     const days = req.query.days !== undefined ? Number(req.query.days) : 30;
-    res.json(svc.getBoard({ days }));
+    const board = svc.getBoard({ days });
+    res.json({ ...board, platforms: filterByGrants(board.platforms, grantsOf(req)) });
   } catch (err) {
     next(err);
   }
@@ -17,7 +19,9 @@ router.get('/board', (req, res, next) => {
 router.get('/services', (req, res, next) => {
   try {
     const days = req.query.days !== undefined ? Number(req.query.days) : 30;
-    res.json(svc.getServicesBoard({ days }));
+    const board = svc.getServicesBoard({ days });
+    if (!canViewPlatform(grantsOf(req), 'logicmonitor')) return res.json({ ...board, services: [], picked: 0 });
+    res.json(board);
   } catch (err) {
     next(err);
   }

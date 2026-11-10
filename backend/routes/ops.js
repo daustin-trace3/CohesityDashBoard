@@ -3,6 +3,7 @@ const logger = require('../utils/logger');
 const db = require('../db/database');
 const registry = require('../core/registry');
 const { getSetting } = require('../services/settings');
+const { filterByGrants, grantsOf } = require('../services/platformAccess');
 
 const router = express.Router();
 
@@ -448,7 +449,7 @@ const PLATFORMS = [
 const SEV_RANK = { critical: 0, warning: 1, info: 2 };
 
 router.get('/summary', async (req, res) => {
-  const cards = [];
+  let cards = [];
   // Per-platform wall time: a slow summary blocks the single Node thread for
   // every other request, so the log names the platform when the whole takes over 1 s.
   const t0 = Date.now();
@@ -473,6 +474,8 @@ router.get('/summary', async (req, res) => {
       cards.push({ ...base, health: 'unknown', objects: 0, headline: [], exceptions: [], spark: null, error: true });
     }
   }
+  // A caller sees only the platforms it holds a view grant on; the totals follow.
+  cards = filterByGrants(cards, grantsOf(req));
   const attention = cards
     .flatMap((c) => c.exceptions.map((e) => ({ ...e, platformId: c.id, platform: c.label, color: c.color })))
     .sort((a, b) => (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9) || b.count - a.count)
