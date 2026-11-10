@@ -2,10 +2,11 @@ import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bot, Sparkles,
-  Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity, Crosshair, Waypoints, LayoutGrid, ChevronDown, HeartPulse, Layers, Boxes,
+  Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity, Crosshair, Waypoints, LayoutGrid, ChevronDown, HelpCircle, HeartPulse, Layers, Boxes,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import GlobalSearch from './GlobalSearch';
+import ReleaseNotesModal from './ReleaseNotesModal';
 import UpdateBanner from './UpdateBanner';
 import { LastUpdated } from './ui/primitives';
 import PollerStatusPanel from './PollerStatusPanel';
@@ -241,6 +242,25 @@ export default function Layout() {
   // freshness, etc.); Cohesity pages also fold in the Helios licensing feed.
   const syncScope = isOps ? 'all' : (platformKey || derivedActive?.id || 'cohesity');
   const { status: pollerStatus, refetch: refetchPoller, anySyncing, anyStale, anyError, anyDelayed, hasEntities, newestCapture } = usePollerStatus(syncScope);
+
+  // What's New: the header button opens the release notes for the current
+  // version; a dot sits on it until the user has opened this version once.
+  const [releaseNotes, setReleaseNotes] = useState(null);
+  const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
+  const [releaseNotesUnseen, setReleaseNotesUnseen] = useState(false);
+  useEffect(() => {
+    client.get('/release-notes')
+      .then(({ data }) => {
+        setReleaseNotes(data);
+        const seen = localStorage.getItem('icc:release-notes-seen');
+        if (data?.latest?.version && data.latest.version !== seen) setReleaseNotesUnseen(true);
+      })
+      .catch(() => {});
+  }, []);
+  const openReleaseNotes = () => {
+    setReleaseNotesOpen(true);
+    setReleaseNotesUnseen(false);
+  };
   // What the pill is actually reporting. Error sticks until that source polls
   // cleanly again, so the tooltip has to name it or the pill says nothing.
   // Scoped to the same platform the chip rolls up (every platform on Ops).
@@ -785,6 +805,22 @@ export default function Layout() {
 
           {/* Global search — estate-wide entity typeahead */}
           <GlobalSearch />
+
+          {/* What's New: release notes for the current version */}
+          <button
+            onClick={openReleaseNotes}
+            title="What's New"
+            aria-label="What's New"
+            className="relative flex-shrink-0 flex items-center justify-center h-8 w-8 rounded-lg border transition-colors cursor-pointer border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40"
+          >
+            <HelpCircle size={16} />
+            {releaseNotesUnseen && (
+              <span className="absolute -top-1 -right-1 h-2.5 w-2.5 bg-status-crit rounded-full shadow" />
+            )}
+          </button>
+          {releaseNotesOpen && (
+            <ReleaseNotesModal latest={releaseNotes?.latest} onClose={() => setReleaseNotesOpen(false)} />
+          )}
 
           <div className="flex-shrink-0">
             <NotificationBell
