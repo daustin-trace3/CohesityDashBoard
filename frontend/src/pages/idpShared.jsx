@@ -24,3 +24,16 @@ export function Drawer({ title, onClose, children }) {
     document.body,
   );
 }
+
+/** Switch used on provider cards: a pill that reads Enabled / Disabled beside it. */
+export function EnabledSwitch({ checked, disabled, onChange, title, label }) {
+  return (
+    <span className={`inline-flex items-center gap-2 select-none ${disabled ? 'opacity-60' : ''}`} title={title || ''}>
+      <button type="button" onClick={onChange} disabled={disabled} role="switch" aria-checked={!!checked} aria-label={label}
+        className={`relative shrink-0 w-9 h-5 rounded-full transition-colors ${disabled ? 'cursor-not-allowed' : 'cursor-pointer'} ${checked ? 'bg-brand' : 'bg-cohesity-border'}`}>
+        <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${checked ? 'left-[18px]' : 'left-0.5'}`} />
+      </button>
+      <span className="text-xs text-ink-muted">{checked ? 'Enabled' : 'Disabled'}</span>
+    </span>
+  );
+}

@@ -3,7 +3,7 @@ import { ChevronDown, ChevronRight, Pencil, Plug, Plus, RefreshCw, Save, Trash2 
 import client from '../api/client';
 import { Badge, LastUpdated } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
-import { Drawer, btnPrimary, btnPlain } from './idpShared';
+import { Drawer, EnabledSwitch, btnPrimary, btnPlain } from './idpShared';
 
 // Active Directory section of Users & Access > Identity providers. Presented
 // like the Okta section (2026-11-08): a header with an Add button, an empty
@@ -263,12 +263,8 @@ export default function DirectoryTab() {
               <StateBadge cfg={cfg} ready={ready} />
             </div>
             <div className="flex items-center gap-3">
-              <label className={`inline-flex items-center gap-2 select-none ${ready || cfg.enabled ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
-                title={ready || cfg.enabled ? '' : 'Save a domain, an approved account and its password before enabling domain sign-in.'}>
-                <input type="checkbox" checked={!!cfg.enabled} disabled={!ready && !cfg.enabled}
-                  onChange={toggleEnabled} className="accent-brand cursor-pointer" />
-                <span className="text-xs text-ink-muted">{cfg.enabled ? 'Enabled' : 'Disabled'}</span>
-              </label>
+              <EnabledSwitch checked={!!cfg.enabled} disabled={!ready && !cfg.enabled} onChange={toggleEnabled}
+                label="Enable Active Directory sign-in" title={ready || cfg.enabled ? '' : 'Save a domain, an approved account and its password before enabling domain sign-in.'} />
               <button onClick={() => setDrawer('edit')} aria-label="Edit Active Directory" className="text-ink-faint hover:text-brand cursor-pointer"><Pencil size={13} /></button>
               <button onClick={remove} aria-label="Remove Active Directory" className="text-ink-faint hover:text-status-crit cursor-pointer"><Trash2 size={13} /></button>
             </div>

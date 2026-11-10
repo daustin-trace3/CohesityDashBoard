@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Fingerprint, Plus, Pencil, Trash2, X, Copy, Check, RefreshCw, ShieldCheck } from 'lucide-react';
 import client from '../api/client';
 import DirectoryTab from './DirectoryTab';
-import { Drawer, btnPrimary, btnPlain } from './idpShared';
+import { Drawer, EnabledSwitch, btnPrimary, btnPlain } from './idpShared';
 import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import { copyText } from '../utils/clipboard';
@@ -575,12 +575,8 @@ export default function IdentityProvidersTab() {
               <TestedState p={p} />
             </div>
             <div className="flex items-center gap-3">
-              <label className={`inline-flex items-center gap-2 select-none ${p.testedAt || p.enabled ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
-                title={p.testedAt || p.enabled ? '' : 'Run Save and test before enabling this provider.'}>
-                <input type="checkbox" checked={!!p.enabled} disabled={!p.testedAt && !p.enabled}
-                  onChange={() => toggleEnabled(p)} className="accent-brand cursor-pointer" />
-                <span className="text-xs text-ink-muted">{p.enabled ? 'Enabled' : 'Disabled'}</span>
-              </label>
+              <EnabledSwitch checked={!!p.enabled} disabled={!p.testedAt && !p.enabled} onChange={() => toggleEnabled(p)}
+                label={`Enable ${p.name}`} title={p.testedAt || p.enabled ? '' : 'Run Save and test before enabling this provider.'} />
               <button onClick={() => edit(p)} aria-label={`Edit ${p.name}`} className="text-ink-faint hover:text-brand cursor-pointer"><Pencil size={13} /></button>
               <button onClick={() => remove(p)} aria-label={`Delete ${p.name}`} className="text-ink-faint hover:text-status-crit cursor-pointer"><Trash2 size={13} /></button>
             </div>
