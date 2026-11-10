@@ -5,6 +5,7 @@
 // it can; when the log is still large a TRUNCATE resets it.
 const fs = require('fs');
 const logger = require('../utils/logger');
+const { setSetting } = require('./settings');
 
 function fileBytes(p) {
   try { return fs.statSync(p).size; } catch { return 0; }
@@ -37,6 +38,8 @@ function startWalCheckpoint({ everyMs = 5 * 60000, truncateAboveBytes = 64 * 102
       const res = checkpointOnce(db, db.name, { truncateAboveBytes });
       const line = `[db] wal checkpoint ${res.mode} database: wal ${mb(res.walBytesBefore)} MB -> ${mb(res.walBytesAfter)} MB, busy ${res.busy}`;
       if (res.mode === 'truncate' || res.busy) logger.info(line); else logger.debug(line);
+      // Last run, for the System Health page.
+      setSetting('icc_wal_checkpoint_last', JSON.stringify({ at: new Date().toISOString(), mode: res.mode, beforeMb: mb(res.walBytesBefore), afterMb: mb(res.walBytesAfter), busy: res.busy }));
     } catch (err) {
       logger.warn(`[db] wal checkpoint failed: ${err.message}`);
     }

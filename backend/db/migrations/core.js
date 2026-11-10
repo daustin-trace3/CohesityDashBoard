@@ -774,4 +774,18 @@ module.exports = [
       require('../../core/retention').migrateLegacy(db);
     },
   },
+  // System Health: one row per finished poll or global task run (kept 7 days).
+  {
+    version: 36, // feat/multi-tenant numbers this v37
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS icc_poll_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, platform TEXT NOT NULL, source_id INTEGER NOT NULL DEFAULT 0,
+          source_name TEXT, kind TEXT NOT NULL DEFAULT 'poll', started_at TEXT NOT NULL, ended_at TEXT NOT NULL,
+          duration_ms INTEGER NOT NULL, status TEXT NOT NULL, error TEXT, rss_before_mb INTEGER, rss_after_mb INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_icc_poll_runs_src ON icc_poll_runs(platform, source_id, started_at);
+      `);
+    },
+  },
 ];

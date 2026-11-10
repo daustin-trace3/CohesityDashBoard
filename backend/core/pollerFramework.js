@@ -2,11 +2,24 @@ const nodeCron = require('node-cron');
 const { scheduleCron } = require('./cronSchedule');
 const logger = require('../utils/logger');
 const pollerStatus = require('../services/pollerStatus');
+const systemHealth = require('../services/systemHealth');
 
 // A poll that grows the process by this much, or leaves it above the high
 // mark, gets one memory line in the log (see runWrapped).
 const MEM_LOG_GROWTH_BYTES = 64 * 1048576;
 const MEM_LOG_HIGH_BYTES = 400 * 1048576;
+
+// Poll activity of every poller created in this process, for the heartbeat
+// (System Health page): runs in flight and sources waiting in a serialized queue.
+const activity = new Set();
+function stats() {
+  let active = 0;
+  let queued = 0;
+  for (const read of activity) {
+    try { const s = read(); active += s.active; queued += s.queued; } catch { /* a probe never breaks the count */ }
+  }
+  return { active, queued };
+}
 
 function resolveInterval(intervalMinutes, source, defaultIntervalMinutes) {
   const raw = typeof intervalMinutes === 'function' ? intervalMinutes(source) : intervalMinutes;
@@ -44,16 +57,30 @@ function createPoller({ id, loadSources, intervalMinutes, poll, shouldRun = null
     return rows.find((s) => Number(s.id) === Number(source.id)) || source;
   }
 
+  let running = 0;
+
   async function runWrapped(source) {
     pollerStatus.markStart(id, source.id);
     const rssBefore = process.memoryUsage().rss;
+    const startedMs = Date.now();
+    let status = 'success';
+    let errorText = null;
+    running += 1;
     try {
       await poll(source);
       pollerStatus.markEnd(id, source.id, 'success');
     } catch (err) {
       logger.error(`[${id}] Poll failed for ${source.name || source.id}:`, err?.message || err);
       pollerStatus.markEnd(id, source.id, 'error');
+      status = 'error';
+      errorText = err?.message || String(err);
     } finally {
+      running -= 1;
+      systemHealth.recordPollRun({
+        platform: id, sourceId: source.id, sourceName: source.name, kind: 'poll',
+        startedAt: new Date(startedMs).toISOString(), endedAt: new Date().toISOString(), durationMs: Date.now() - startedMs,
+        status, error: errorText, rssBeforeMb: Math.round(rssBefore / 1048576), rssAfterMb: Math.round(process.memoryUsage().rss / 1048576),
+      });
       // Which poll grows the process: pm2 restarts the poller past its memory
       // limit without saying what was running (seen 2026-10-19, ten kills an
       // hour). Logged only when this poll moved the needle or left it high.
@@ -80,6 +107,7 @@ function createPoller({ id, loadSources, intervalMinutes, poll, shouldRun = null
   // fires are still skipped rather than piling a second copy on.
   let chain = Promise.resolve();
   const pending = new Set();
+  activity.add(() => ({ active: running, queued: Math.max(0, pending.size - (serialize ? running : 0)) }));
   function run(source) {
     if (!serialize) return runWrapped(source);
     if (pending.has(source.id)) {
@@ -226,6 +254,8 @@ function createPoller({ id, loadSources, intervalMinutes, poll, shouldRun = null
  */
 function createGlobalTask({ id, sourceId = 0, intervalMinutes, run, defaultIntervalMinutes = 15, cronLib = nodeCron, shouldRun }) {
   let task = null;
+  let running = 0;
+  activity.add(() => ({ active: running, queued: 0 }));
 
   async function runWrapped() {
     // Optional gate (e.g. an unconfigured SaaS account): skip without touching
@@ -235,12 +265,26 @@ function createGlobalTask({ id, sourceId = 0, intervalMinutes, run, defaultInter
       return;
     }
     pollerStatus.markStart(id, sourceId);
+    const rssBefore = process.memoryUsage().rss;
+    const startedMs = Date.now();
+    let status = 'success';
+    let errorText = null;
+    running += 1;
     try {
       await run();
       pollerStatus.markEnd(id, sourceId, 'success');
     } catch (err) {
       logger.error(`[${id}] Global task failed:`, err?.message || err);
       pollerStatus.markEnd(id, sourceId, 'error');
+      status = 'error';
+      errorText = err?.message || String(err);
+    } finally {
+      running -= 1;
+      systemHealth.recordPollRun({
+        platform: id, sourceId, sourceName: id, kind: 'task',
+        startedAt: new Date(startedMs).toISOString(), endedAt: new Date().toISOString(), durationMs: Date.now() - startedMs,
+        status, error: errorText, rssBeforeMb: Math.round(rssBefore / 1048576), rssAfterMb: Math.round(process.memoryUsage().rss / 1048576),
+      });
     }
   }
 
@@ -275,4 +319,4 @@ function createGlobalTask({ id, sourceId = 0, intervalMinutes, run, defaultInter
   return { start, stop, reschedule, trigger, isRunning };
 }
 
-module.exports = { createPoller, createGlobalTask };
+module.exports = { createPoller, createGlobalTask, stats };

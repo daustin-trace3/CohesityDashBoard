@@ -190,6 +190,8 @@ if (require.main === module) {
       // A demo has no poller process to hear from, and this process is the one
       // doing what background work there is, so it beats for itself.
       require('./services/workerHeartbeat').startHeartbeat('demo instance (seeded data, no polling)');
+      // The demo has no poller process, so the System Health sweep (db snapshot) runs here too.
+      require('./services/systemHealth').startSweep();
     } else if (process.env.RUN_POLLERS_INLINE === 'true') {
       // Legacy single-process mode: pollers share the API event loop, so
       // heavy poll cycles can stall API responses. Prefer the separate
@@ -199,6 +201,7 @@ if (require.main === module) {
       initServiceStatus();
       require('./services/opsAgent').initOpsAgent();
       require('./services/workerHeartbeat').startHeartbeat('poller (inline in the API process)');
+      require('./services/systemHealth').startSweep();
       directorySync.startScheduler();
       require('./services/idpSync').startScheduler();
       // Start pollers only for enabled, actively-registered plugins (Cohesity's

@@ -18,6 +18,7 @@ const { initServiceStatus } = require('./services/serviceStatus');
 const { initOpsAgent } = require('./services/opsAgent');
 const { startHeartbeat } = require('./services/workerHeartbeat');
 const { startWalCheckpoint } = require('./services/walCheckpoint');
+const { startSweep: startHealthSweep } = require('./services/systemHealth');
 const { initLicensing } = require('./services/licensing');
 const { initViews } = require('./services/views');
 const { initGflags } = require('./services/gflags');
@@ -109,6 +110,7 @@ if (isDemo()) {
   initDnsPrewarm();
   startHeartbeat('poller');
   startWalCheckpoint();
+  startHealthSweep();
   logger.info('[Poller process] All pollers scheduled (Cohesity, plugins, licensing, views, gflags, alert notifier, DNS prewarm).');
 }
 

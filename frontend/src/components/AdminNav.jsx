@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Sparkles, Layers, KeyRound, Mail, Users, SlidersHorizontal } from 'lucide-react';
+import { Sparkles, Layers, KeyRound, Mail, Users, SlidersHorizontal, Activity } from 'lucide-react';
 import { useAuth } from '../auth/AuthContext';
 
 // Grouped vertical nav shared by every Global Settings page. Each item is a
@@ -25,6 +25,7 @@ const GROUPS = [
   {
     label: 'System',
     items: [
+      { to: '/admin/health', label: 'System Health', icon: Activity, permission: 'admin:settings:view' },
       { to: '/admin/license', label: 'Product License', icon: KeyRound },
       { to: '/admin/notifications', label: 'Alert Notifications', icon: Mail },
     ],

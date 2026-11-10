@@ -62,8 +62,9 @@ router.post('/trigger/:clusterId', (req, res, next) => {
   }
 });
 
-router.get('/status', (req, res, next) => {
-  try {
+// The status payload, also read by routes/systemHealth.js (System Health page).
+function buildStatus() {
+  {
     const now = Date.now();
 
     // Helper: compute ageMinutes from a captured_at UTC string (no timezone suffix).
@@ -217,7 +218,7 @@ router.get('/status', (req, res, next) => {
     const zertoInterval = Number(getSetting('zerto_poll_interval_minutes')) || 15;
     const zertoConfigured = require('../services/zertoApi').zertoConfigured();
 
-    res.json({
+    return {
       cohesity: {
         enabled: clusters.length > 0,
         entities: cohesityEntities,
@@ -263,7 +264,13 @@ router.get('/status', (req, res, next) => {
         staleAfterMinutes: zertoInterval * 2 + 5,
         failedSources: [],
       },
-    });
+    };
+  }
+}
+
+router.get('/status', (req, res, next) => {
+  try {
+    res.json(buildStatus());
   } catch (err) {
     next(err);
   }
@@ -671,3 +678,4 @@ router.post('/sources/:platform/:entityId/poll', (req, res, next) => {
 });
 
 module.exports = router;
+module.exports.buildStatus = buildStatus;

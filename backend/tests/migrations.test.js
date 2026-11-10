@@ -201,7 +201,7 @@ function normalizeSchema(db) {
 // + inline-migration path, so they're excluded from the legacy-equivalence
 // comparisons below and asserted to exist separately instead.
 const NEW_TABLES = [
-  'plugins', 'users', 'groups', 'user_groups', 'role_grants',
+  'icc_poll_runs', 'plugins', 'users', 'groups', 'user_groups', 'role_grants',
   'auth_sessions', 'service_accounts', 'alert_notifications',
   'cohesity_views', 'cohesity_nodes', 'workload_history', 'cluster_gflags', 'gflag_changes',
   'zerto_sites', 'zerto_vpgs', 'zerto_alerts', 'zerto_vms', 'zerto_metrics_history', 'zerto_vras', 'zerto_licenses', 'zerto_alert_catalog',

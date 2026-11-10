@@ -5,6 +5,7 @@
 // cannot reach: the line names the route, the SQL lines name the cause.
 const logger = require('../utils/logger');
 const sqlProfile = require('../core/sqlProfile');
+const requestStats = require('../services/requestStats');
 
 const thresholdMs = () => {
   const n = Number(process.env.ICC_SLOW_REQUEST_MS);
@@ -16,6 +17,7 @@ function requestTiming(req, res, next) {
   const before = sqlProfile.isInstalled() ? sqlProfile.snapshot() : null;
   res.on('finish', () => {
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    try { requestStats.record(requestStats.routeKey(req), ms, res.statusCode); } catch { /* statistics never break a request */ }
     if (ms < thresholdMs()) return;
     let detail = '';
     if (before) {

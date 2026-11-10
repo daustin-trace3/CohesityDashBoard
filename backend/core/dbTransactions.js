@@ -14,6 +14,10 @@ const BUSY_CODES = new Set(['SQLITE_BUSY', 'SQLITE_BUSY_SNAPSHOT']);
 const RETRY_SLEEPS_MS = [250, 500];
 const MODES = ['default', 'deferred', 'immediate', 'exclusive'];
 
+// Counters for the System Health page (since this process started).
+const counters = { slowTransactions: 0, busyRetries: 0, slowMs: 2000 };
+function stats() { return { ...counters }; }
+
 function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
@@ -32,6 +36,7 @@ function captureOrigin() {
 
 function installTransactionShim(db, { logger, role = 'web', slowMs = 2000, busyRetries = 2 } = {}) {
   if (db.__iccTxnShim) return db;
+  counters.slowMs = slowMs;
   const original = db.transaction.bind(db);
   const retries = role === 'poller' ? Math.max(0, busyRetries) : 0;
 
@@ -51,6 +56,7 @@ function installTransactionShim(db, { logger, role = 'web', slowMs = 2000, busyR
         } catch (err) {
           if (outermost && attempt < retries && err && BUSY_CODES.has(err.code)) {
             attempt += 1;
+            counters.busyRetries += 1;
             logger.warn(`[db] busy, retry ${attempt} of ${retries}: ${origin}`);
             sleepSync(RETRY_SLEEPS_MS[Math.min(attempt - 1, RETRY_SLEEPS_MS.length - 1)]);
             continue;
@@ -58,6 +64,7 @@ function installTransactionShim(db, { logger, role = 'web', slowMs = 2000, busyR
           throw err;
         } finally {
           const took = Date.now() - start;
+          if (took > slowMs) counters.slowTransactions += 1;
           if (took > slowMs) logger.warn(`[db] slow transaction ${took} ms: ${origin}`);
         }
       }
@@ -71,4 +78,4 @@ function installTransactionShim(db, { logger, role = 'web', slowMs = 2000, busyR
   return db;
 }
 
-module.exports = { installTransactionShim };
+module.exports = { installTransactionShim, stats };

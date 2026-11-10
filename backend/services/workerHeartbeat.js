@@ -34,7 +34,10 @@ function beat(role) {
     logger.warn(`[Worker] ${Math.round((now - lastBeat) / 60000)} min gap since the last heartbeat, but this process has been up ${uptimeText()}: the host was suspended or the event loop was blocked. Nothing polled or ticked during the gap.`);
   }
   lastBeat = now;
-  setSetting(KEY, JSON.stringify({ at: new Date(now).toISOString(), pid: process.pid, startedAt, role }));
+  // Health fields never stop the beat: a failed sample leaves them out.
+  let sample = {};
+  try { sample = require('./systemHealth').processSample(); } catch (err) { logger.debug(`[Worker] health sample failed: ${err.message}`); }
+  setSetting(KEY, JSON.stringify({ at: new Date(now).toISOString(), pid: process.pid, startedAt, role, ...sample }));
   if (now - lastLog >= LOG_MS) {
     lastLog = now;
     // Memory split so a pm2 max-memory restart can be read: a large rss with a
@@ -71,6 +74,8 @@ function readHeartbeat() {
     // Up to now while it is beating; frozen at the last beat once it stops.
     uptimeSeconds: Math.max(0, Math.round(((age * 1000 < STALE_MS ? Date.now() : Date.parse(h.at)) - Date.parse(h.startedAt)) / 1000)),
     alive: age * 1000 < STALE_MS,
+    // System Health fields written by beat(); absent on a heartbeat from an older build.
+    mem: h.mem, loopLagP99Ms: h.loopLagP99Ms, nodeVersion: h.nodeVersion, polling: h.polling, log: h.log, db: h.db,
   };
 }
 

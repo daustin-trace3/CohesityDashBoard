@@ -9,13 +9,14 @@ import { SettingRow, SettingGroup, TabSaveBar, numberCls } from '../components/s
 import SettingsTabs, { useSettingsTab } from '../components/settings/SettingsTabs';
 import { RetentionGlobalGroup } from '../components/settings/RetentionControls';
 import IntelligenceSettingsPage from './IntelligenceSettingsPage';
+import SystemHealthPage from './admin/SystemHealthPage';
 import { SWITCHER_MODES, getSwitcherMode } from '../components/PlatformSwitcher';
 
 // Sections rendered by this page; Users & Access and Plugins are their own
 // routed pages sharing the same AdminNav shell.
-const LOCAL_SECTIONS = ['intelligence', 'platforms', 'license', 'notifications'];
+const LOCAL_SECTIONS = ['intelligence', 'platforms', 'license', 'notifications', 'health'];
 // Sections that use the whole column: tabbed pages, not single forms.
-const WIDE_SECTIONS = ['intelligence'];
+const WIDE_SECTIONS = ['intelligence', 'health'];
 // Old Intelligence routes (and bare /admin), kept as aliases that redirect to
 // the matching tab of /admin/intelligence so bookmarks keep working.
 const INTEL_ALIASES = { ai: 'provider', agent: 'agent', 'agent-capabilities': 'capabilities', 'agent-privacy': 'privacy' };
@@ -250,8 +251,9 @@ export default function AdminSettingsPage() {
         <div className={`flex flex-col gap-4 flex-1 min-w-0 ${WIDE_SECTIONS.includes(tab) ? '' : 'max-w-3xl'}`}>
 
       {tab === 'intelligence' && <IntelligenceSettingsPage />}
+      {tab === 'health' && <SystemHealthPage />}
 
-      {tab !== 'intelligence' && (
+      {tab !== 'intelligence' && tab !== 'health' && (
         <SettingsTabs tabs={pageTabs} active={pageTab} onChange={selectPageTab}
           label={tab === 'platforms' ? 'Feature settings' : tab === 'license' ? 'License settings' : 'Alert notification settings'} />
       )}
