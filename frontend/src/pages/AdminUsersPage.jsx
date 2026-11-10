@@ -71,6 +71,7 @@ function PlatformAccessEditor({ grants, onAdd, onRemove }) {
 
   const rows = [
     { ns: '*', label: 'All platforms', hint: 'includes future platforms and administration' },
+    { ns: 'ops', label: 'Ops', hint: 'Ops Agent, Estate Advisor and Service Status analyses. Rollup pages need only a platform grant.' },
     ...platforms.map(p => ({ ns: p.id, label: p.label, color: p.color })),
     { ns: 'admin', label: 'Administration', hint: 'settings, users, plugins, licensing' },
   ];

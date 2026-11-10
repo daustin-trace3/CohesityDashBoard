@@ -4,6 +4,7 @@
 const express = require('express');
 const { param, validationResult } = require('express-validator');
 const estateAdvisor = require('../services/advisors/estateAdvisor');
+const { requireOps } = require('../services/platformAccess');
 
 const router = express.Router();
 
@@ -16,7 +17,7 @@ function validate(req, res, next) {
 const reportKey = (slug) => String(slug).replace(/-/g, '_');
 
 /** GET /api/estate/advisor/:report — cached report (or null). */
-router.get('/advisor/:report', [param('report').isString()], validate, (req, res, next) => {
+router.get('/advisor/:report', requireOps('view'), [param('report').isString()], validate, (req, res, next) => {
   try {
     const key = reportKey(req.params.report);
     if (!estateAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
@@ -25,7 +26,7 @@ router.get('/advisor/:report', [param('report').isString()], validate, (req, res
 });
 
 /** POST /api/estate/advisor/:report — (re)generate and cache. */
-router.post('/advisor/:report', [param('report').isString()], validate, async (req, res, next) => {
+router.post('/advisor/:report', requireOps('manage'), [param('report').isString()], validate, async (req, res, next) => {
   try {
     const key = reportKey(req.params.report);
     if (!estateAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
@@ -48,7 +49,7 @@ router.post('/advisor/:report', [param('report').isString()], validate, async (r
 /** GET /api/estate/config-changes — raw ledger rows, newest first. */
 const { query } = require('express-validator');
 const { listChanges } = require('../services/configLedger');
-router.get('/config-changes', [
+router.get('/config-changes', requireOps('view'), [
   query('days').optional().isInt({ min: 1, max: 365 }).toInt(),
   query('platform').optional().isString().trim().isLength({ max: 40 }),
   query('scope').optional().isString().trim().isLength({ max: 60 }),
@@ -63,6 +64,6 @@ router.get('/config-changes', [
 });
 
 // Ad-hoc email of the cached advisor report (user-clicked, never scheduled).
-router.post('/advisor/:report/email', estateAdvisor.emailRoute('Estate'));
+router.post('/advisor/:report/email', requireOps('manage'), estateAdvisor.emailRoute('Estate'));
 
 module.exports = router;

@@ -22,6 +22,8 @@ let app;
 beforeAll(() => {
   runMigrations(db, 'logicmonitor', lmMigrations);
   app = express();
+  // The router is mounted without the auth middleware here; the board filters by the caller's grants, so stand in as an all-access caller.
+  app.use((req, _res, next) => { req.auth = { kind: 'test', grants: ['*:*:*'] }; next(); });
   app.use('/api/service-status', router);
 });
 

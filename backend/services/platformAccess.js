@@ -17,4 +17,26 @@ function grantsOf(req) {
   return (req && req.auth && req.auth.grants) || [];
 }
 
-module.exports = { canViewPlatform, filterByGrants, grantsOf };
+/** True when the caller holds a view grant on at least one of the platform ids. */
+function canViewAnyOf(grants, platformIds) {
+  return (platformIds || []).some((id) => canViewPlatform(grants, id));
+}
+
+/** The caller's Ops level: 'manage', 'view' or null. Rollup pages need no ops
+ *  grant; the Ops Agent, Estate Advisor and acting routes do. */
+function opsLevel(grants) {
+  if (hasPermission(grants || [], 'ops:*:manage')) return 'manage';
+  if (hasPermission(grants || [], 'ops:*:view')) return 'view';
+  return null;
+}
+
+/** Express middleware: 403 unless the caller holds ops:*:<level>. */
+function requireOps(level) {
+  const required = `ops:*:${level}`;
+  return (req, res, next) => {
+    if (hasPermission(grantsOf(req), required)) return next();
+    return res.status(403).json({ error: 'forbidden', required });
+  };
+}
+
+module.exports = { canViewPlatform, canViewAnyOf, filterByGrants, grantsOf, opsLevel, requireOps };

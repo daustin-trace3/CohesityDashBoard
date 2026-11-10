@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import { HeartPulse, Sparkles, X } from 'lucide-react';
 import client from '../../api/client';
+import { useAuth } from '../../auth/AuthContext';
 import WorkerChip from '../../components/WorkerChip';
 import { PageHeader, Panel, Badge, LoadingPanel, RefreshButton, LastUpdated, timeAgo } from '../../components/ui/primitives';
 import { useAiEnabled } from '../../api/useAiEnabled';
@@ -195,6 +196,8 @@ function AnalysisModal({ eventId, onClose }) {
   const [rerunning, setRerunning] = useState(false);
   const [rerunError, setRerunError] = useState(null);
   const aiEnabled = useAiEnabled();
+  const { hasPermission } = useAuth();
+  const canManage = hasPermission('ops:*:manage');
   const pollRef = useRef(null);
 
   const load = useCallback(() => {
@@ -254,7 +257,7 @@ function AnalysisModal({ eventId, onClose }) {
       subtitle={subtitle}
       icon={Sparkles}
       onClose={onClose}
-      footer={aiEnabled ? (
+      footer={!canManage ? null : aiEnabled ? (
         <button
           onClick={rerun}
           disabled={rerunning}

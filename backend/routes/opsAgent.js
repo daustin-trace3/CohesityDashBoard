@@ -8,8 +8,33 @@ const agentProfiles = require('../services/agentProfiles');
 const observations = require('../services/agentObservations');
 const { getSetting, getObservationSettings } = require('../services/settings');
 const { requirePermission } = require('../middleware/requirePermission');
+const { requireOps, canViewAnyOf, canViewPlatform, grantsOf } = require('../services/platformAccess');
+const { hasPermission } = require('../services/rbac');
 
 const router = express.Router();
+
+// Every read needs ops:*:view and every write ops:*:manage. The admin routes
+// below keep their own requirePermission on top of this gate.
+router.use((req, res, next) => requireOps(req.method === 'GET' ? 'view' : 'manage')(req, res, next));
+
+/** An incident is visible to a caller who holds *:*:view or a view grant on any
+ *  platform the incident touches. Counts on /status and /pulse stay
+ *  estate-wide; only the lists and single reads are scoped. */
+function visibleIncident(req, inc) {
+  const grants = grantsOf(req);
+  if (hasPermission(grants, '*:*:view')) return true;
+  const platforms = Array.isArray(inc && inc.platforms) ? inc.platforms : [];
+  return canViewAnyOf(grants, platforms);
+}
+
+/** 404 unless the incident exists and is visible; returns the incident or null (response sent). */
+function guardIncident(req, res, id) {
+  const inc = agent.getIncident(id);
+  if (!inc || !visibleIncident(req, inc)) { res.status(404).json({ error: 'Incident not found.' }); return null; }
+  return inc;
+}
+
+const observationVisible = (req, platform) => hasPermission(grantsOf(req), '*:*:view') || canViewPlatform(grantsOf(req), platform);
 
 function fail(res, err) {
   if (err.code === 'NOT_FOUND') return res.status(404).json({ error: err.message });
@@ -24,6 +49,7 @@ function fail(res, err) {
   return null;
 }
 
+// Counts here and on /pulse are estate-wide; lists and single reads are scoped by platform.
 router.get('/status', (req, res, next) => {
   try { res.json(agent.status()); } catch (err) { next(err); }
 });
@@ -41,14 +67,14 @@ router.get('/incidents', (req, res, next) => {
     const state = ['open', 'resolved', 'all'].includes(req.query.state) ? req.query.state : 'open';
     const limit = Number(req.query.limit) || 100;
     const needsHuman = req.query.needsHuman === '1' || req.query.needsHuman === 'true';
-    res.json(agent.listIncidents({ state, limit, needsHuman }));
+    res.json(agent.listIncidents({ state, limit, needsHuman }).filter((i) => visibleIncident(req, i)));
   } catch (err) { next(err); }
 });
 
 router.get('/incidents/:id', (req, res, next) => {
   try {
-    const inc = agent.getIncident(Number(req.params.id));
-    if (!inc) return res.status(404).json({ error: 'Incident not found.' });
+    const inc = guardIncident(req, res, Number(req.params.id));
+    if (!inc) return;
     res.json(inc);
   } catch (err) { next(err); }
 });
@@ -56,17 +82,17 @@ router.get('/incidents/:id', (req, res, next) => {
 router.get('/incidents/:id/analyses', (req, res, next) => {
   try {
     const id = Number(req.params.id);
-    if (!agent.getIncident(id)) return res.status(404).json({ error: 'Incident not found.' });
+    if (!guardIncident(req, res, id)) return;
     res.json(agent.listAnalyses(id, { full: req.query.full === '1' || req.query.full === 'true' }));
   } catch (err) { next(err); }
 });
 
 router.post('/incidents/:id/retriage', async (req, res, next) => {
-  try { res.json(await agent.retriage(Number(req.params.id))); } catch (err) { if (!fail(res, err)) next(err); }
+  try { if (!guardIncident(req, res, Number(req.params.id))) return; res.json(await agent.retriage(Number(req.params.id))); } catch (err) { if (!fail(res, err)) next(err); }
 });
 
 router.post('/incidents/:id/resend', async (req, res, next) => {
-  try { res.json(await agent.resend(Number(req.params.id))); } catch (err) { if (!fail(res, err)) next(err); }
+  try { if (!guardIncident(req, res, Number(req.params.id))) return; res.json(await agent.resend(Number(req.params.id))); } catch (err) { if (!fail(res, err)) next(err); }
 });
 
 const actor = (req) => req.auth?.user?.username || req.user?.username || 'manual';
@@ -74,22 +100,23 @@ const noteOf = (req) => (req.body && typeof req.body.note === 'string' ? req.bod
 
 router.post('/incidents/:id/resolve', (req, res, next) => {
   try {
+    if (!guardIncident(req, res, Number(req.params.id))) return;
     res.json(agent.resolve(Number(req.params.id), actor(req), noteOf(req)));
   } catch (err) { if (!fail(res, err)) next(err); }
 });
 
 /** Acknowledge: someone has it. Stops reminders; the incident stays open. */
 router.post('/incidents/:id/ack', (req, res, next) => {
-  try { res.json(agent.acknowledge(Number(req.params.id), actor(req), noteOf(req))); } catch (err) { if (!fail(res, err)) next(err); }
+  try { if (!guardIncident(req, res, Number(req.params.id))) return; res.json(agent.acknowledge(Number(req.params.id), actor(req), noteOf(req))); } catch (err) { if (!fail(res, err)) next(err); }
 });
 
 router.post('/incidents/:id/unack', (req, res, next) => {
-  try { res.json(agent.unacknowledge(Number(req.params.id), actor(req))); } catch (err) { if (!fail(res, err)) next(err); }
+  try { if (!guardIncident(req, res, Number(req.params.id))) return; res.json(agent.unacknowledge(Number(req.params.id), actor(req))); } catch (err) { if (!fail(res, err)) next(err); }
 });
 
 /** Snooze: pause reminders for 1 to 90 days; 0 clears the snooze. */
 router.post('/incidents/:id/snooze', (req, res, next) => {
-  try { res.json(agent.snooze(Number(req.params.id), req.body && req.body.days, actor(req))); } catch (err) { if (!fail(res, err)) next(err); }
+  try { if (!guardIncident(req, res, Number(req.params.id))) return; res.json(agent.snooze(Number(req.params.id), req.body && req.body.days, actor(req))); } catch (err) { if (!fail(res, err)) next(err); }
 });
 
 /** Run one tick now, even when the agent is switched off (manual check). */
@@ -111,12 +138,12 @@ router.get('/observations', (req, res, next) => {
     const patterns = new Map();
     for (const g of observations.patternGroups(new Date().toISOString(), settings)) patterns.set(`${g[0].observer_id}|${g[0].subject_key}`, g.length);
     if (scope === 'watching') {
-      return res.json(observations.watchingEpisodes({ obs }).slice(0, limit).map((e) => {
+      return res.json(observations.watchingEpisodes({ obs }).filter((e) => observationVisible(req, e.platform)).slice(0, limit).map((e) => {
         const n = patterns.get(`${e.observerId}|${e.subjectKey}`) || 0;
         return { ...e, inPattern: n > 0, patternCount: n };
       }));
     }
-    const rows = observations.listEpisodes({ scope, limit });
+    const rows = observations.listEpisodes({ scope, limit }).filter((r) => observationVisible(req, r.platform));
     res.json(rows.map((r) => {
       const n = patterns.get(`${r.observer_id}|${r.subject_key}`) || 0;
       return { ...observations.describe(r, { obs }), inPattern: n > 0, patternCount: n };
@@ -128,7 +155,7 @@ router.get('/observations/:id', (req, res, next) => {
   try {
     res.set('Cache-Control', 'no-store');
     const row = observations.getEpisode(Number(req.params.id));
-    if (!row) return res.status(404).json({ error: 'Observation not found.' });
+    if (!row || !observationVisible(req, row.platform)) return res.status(404).json({ error: 'Observation not found.' });
     const settings = getObservationSettings();
     const obs = new Map(observations.listObservers(settings).map((o) => [o.id, o]));
     const history = observations.episodeHistory(row.subject_key, 30)
@@ -146,7 +173,7 @@ router.get('/observers', (req, res, next) => {
   try {
     res.set('Cache-Control', 'no-store');
     const settings = getObservationSettings();
-    res.json(observations.listObservers(settings).map((o) => {
+    res.json(observations.listObservers(settings).filter((o) => observationVisible(req, o.platform)).map((o) => {
       let thresholds = { warn: null, crit: null };
       try { thresholds = observations.getObserver(o.id).thresholds(getSetting); } catch { /* observer threshold read failed */ }
       return { ...o, thresholds: { warn: thresholds.warn, crit: thresholds.crit } };

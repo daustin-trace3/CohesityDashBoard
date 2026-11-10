@@ -6,11 +6,30 @@ const svc = require('../services/appServiceStatus');
 const db = require('../db/database');
 const { getAuthenticatedClient } = require('../services/cohesityApi');
 const { requirePermission } = require('../middleware/requirePermission');
+const { canViewPlatform, grantsOf } = require('../services/platformAccess');
 
 const multer = require('multer');
 
 const router = express.Router();
 const manage = requirePermission('admin:settings:manage');
+// Component arrays of an app detail and the platform behind each. Items that
+// carry their own platform (storage, backup, replication) use it; servers and
+// hosts come from vCenter and network rows from LogicMonitor. The rollup state,
+// findings and counts stay as computed (they are estate facts); only the
+// component blocks a caller holds no platform for are dropped.
+const COMPONENT_PLATFORM = { servers: 'vcenter', hosts: 'vcenter', storage: null, backup: null, replication: null, network: 'logicmonitor' };
+function scopeApp(app, grants) {
+  const out = { ...app };
+  for (const [key, fallback] of Object.entries(COMPONENT_PLATFORM)) {
+    if (!Array.isArray(out[key])) continue;
+    out[key] = out[key].filter((item) => {
+      const platform = (item && item.platform) || fallback;
+      return platform ? canViewPlatform(grants, platform) : true;
+    });
+  }
+  return out;
+}
+
 const catalogUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 } });
 
 router.get('/board', (req, res, next) => {
@@ -120,7 +139,7 @@ router.post('/catalog/import', manage, (req, res, next) => {
 
 router.get('/apps/:usageId', (req, res, next) => {
   try {
-    res.json(svc.evaluate(req.params.usageId));
+    res.json(scopeApp(svc.evaluate(req.params.usageId), grantsOf(req)));
   } catch (err) {
     next(err);
   }

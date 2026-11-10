@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Bot, X, Mail, RefreshCw, CheckCircle2, Play, Settings, Bell, BellOff, Clock } from 'lucide-react';
 import client from '../../api/client';
+import { useAuth } from '../../auth/AuthContext';
 import { PageHeader, Panel, Badge, LoadingPanel, LastUpdated, timeAgo } from '../../components/ui/primitives';
 import WorkerChip from '../../components/WorkerChip';
 import { useToast } from '../../components/ui/Toaster';
@@ -420,6 +421,8 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpe
   const [busy, setBusy] = useState(null);
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const [resolving, setResolving] = useState(false);
+  const { hasPermission } = useAuth();
+  const canManage = hasPermission('ops:*:manage');
   const [analyses, setAnalyses] = useState([]);
   const [viewPass, setViewPass] = useState(null);
   const { toast } = useToast();
@@ -508,7 +511,7 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpe
       subtitle={inc ? `${KIND_LABEL[inc.kind] || 'Host'} · ${inc.platforms.join(', ')} · opened ${timeAgo(inc.openedAt)} · ${inc.eventCount} alert${inc.eventCount === 1 ? '' : 's'} · id ${inc.id}` : null}
       badges={badges}
       icon={Bot} onClose={onClose}
-      footer={inc && (
+      footer={inc && canManage && (
         <>
           {isOpen && inc.requiresHuman && (
             inc.acknowledgedAt
@@ -865,6 +868,8 @@ function Stat({ label, value, tone }) {
 
 export default function OpsAgentPage() {
   const { toast } = useToast();
+  const { hasPermission } = useAuth();
+  const canManage = hasPermission('ops:*:manage');
   const [status, setStatus] = useState(null);
   const [rows, setRows] = useState(null);
   const [scope, setScope] = useState('open');
@@ -946,10 +951,12 @@ export default function OpsAgentPage() {
           {live ? 'Live' : 'Reconnecting'}
         </span>
         <LastUpdated date={lastRefreshed} prefix="Updated" />
-        <button onClick={runNow} disabled={running}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50 cursor-pointer">
-          <Play size={13} /> {running ? 'Running…' : 'Run now'}
-        </button>
+        {canManage && (
+          <button onClick={runNow} disabled={running}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50 cursor-pointer">
+            <Play size={13} /> {running ? 'Running…' : 'Run now'}
+          </button>
+        )}
         <Link to="/admin/agent" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors">
           <Settings size={13} /> Settings
         </Link>

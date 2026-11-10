@@ -30,14 +30,14 @@ const SERVICE_WORD = { ok: 'Operational', degraded: 'Degraded', failed: 'Failed'
 const opsNavGroups = [{
   label: 'Estate',
   items: [
-    { label: 'Ops Monitor', route: '/ops', icon: Activity, isActive: p => p === '/ops', permission: 'cohesity:*:view' },
-    { label: 'Ops Agent', route: '/ops/agent', icon: Bot, isActive: p => p.startsWith('/ops/agent'), permission: 'cohesity:*:view', requiresAi: true },
-    { label: 'Estate Advisor', route: '/ops/estate-advisor', icon: Sparkles, isActive: p => p.startsWith('/ops/estate-advisor'), permission: 'cohesity:*:view', requiresAi: true },
-    { label: 'Service Status', route: '/ops/services', icon: HeartPulse, isActive: p => p.startsWith('/ops/services'), permission: 'cohesity:*:view' },
-    { label: 'Platform Status', route: '/ops/status', icon: Boxes, isActive: p => p.startsWith('/ops/status'), permission: 'cohesity:*:view' },
-    { label: 'App Services', route: '/ops/app-status', icon: Layers, isActive: p => p.startsWith('/ops/app-status'), permission: 'cohesity:*:view' },
-    { label: 'Server 360', route: '/ops/server360', icon: Crosshair, isActive: p => p.startsWith('/ops/server360'), permission: 'cohesity:*:view' },
-    { label: 'Topology', route: '/ops/topology', icon: Waypoints, isActive: p => p.startsWith('/ops/topology'), permission: 'cohesity:*:view' },
+    { label: 'Ops Monitor', route: '/ops', icon: Activity, isActive: p => p === '/ops', permission: 'any-platform' },
+    { label: 'Ops Agent', route: '/ops/agent', icon: Bot, isActive: p => p.startsWith('/ops/agent'), permission: 'ops:*:view', requiresAi: true },
+    { label: 'Estate Advisor', route: '/ops/estate-advisor', icon: Sparkles, isActive: p => p.startsWith('/ops/estate-advisor'), permission: 'ops:*:view', requiresAi: true },
+    { label: 'Service Status', route: '/ops/services', icon: HeartPulse, isActive: p => p.startsWith('/ops/services'), permission: 'any-platform' },
+    { label: 'Platform Status', route: '/ops/status', icon: Boxes, isActive: p => p.startsWith('/ops/status'), permission: 'any-platform' },
+    { label: 'App Services', route: '/ops/app-status', icon: Layers, isActive: p => p.startsWith('/ops/app-status'), permission: 'any-platform' },
+    { label: 'Server 360', route: '/ops/server360', icon: Crosshair, isActive: p => p.startsWith('/ops/server360'), permission: 'any-platform' },
+    { label: 'Topology', route: '/ops/topology', icon: Waypoints, isActive: p => p.startsWith('/ops/topology'), permission: 'any-platform' },
   ],
 }];
 
@@ -306,7 +306,12 @@ export default function Layout() {
     });
   };
 
+  // The alert bell and cluster count read Cohesity; a caller without a Cohesity
+  // grant skips the probe (it would only 403) and the footer state comes from
+  // the /platforms call below.
+  const canCohesity = !authLoading && hasPermission('cohesity:*:view');
   useEffect(() => {
+    if (!canCohesity) { setAlerts([]); setAlertCount(0); return undefined; }
     const load = async () => {
       const [alertResp, clusterResp] = await Promise.allSettled([
         client.get('/cohesity/alerts?dismissed=0&resolved=0'),
@@ -315,19 +320,15 @@ export default function Layout() {
       if (alertResp.status === 'fulfilled') {
         setAlerts(alertResp.value.data);
         setAlertCount(alertResp.value.data.length);
-        setApiOnline(true);
       }
       if (clusterResp.status === 'fulfilled') {
         setClusterCount(clusterResp.value.data.length);
-      }
-      if (alertResp.status === 'rejected' && clusterResp.status === 'rejected') {
-        setApiOnline(false);
       }
     };
     load();
     const interval = setInterval(load, 60000);
     return () => clearInterval(interval);
-  }, []);
+  }, [canCohesity]);
 
   // Vendor-platform fleet summary (count + open alerts + health) — only while a
   // platform is active. Pure is backed by the Pure1 cloud fleet; NetApp uses its
@@ -547,6 +548,7 @@ export default function Layout() {
         return r;
       })
       .then(r => {
+        setApiOnline(true);
         const derivedRows = (Array.isArray(r.data.derivedPlatforms) ? r.data.derivedPlatforms : [])
           .filter(d => d && d.enabled && d.present);
         setDerivedIds(derivedRows.map(d => d.id));
@@ -566,7 +568,9 @@ export default function Layout() {
         ...derivedRows.map(d => d.id),
         ]);
       })
-      .catch(() => {})
+      // A failure with no response is the network (API unreachable); an HTTP
+      // error means the API answered, so the footer state is left alone.
+      .catch((err) => { if (!err || !err.response) setApiOnline(false); })
       .finally(() => setPlatformsLoaded(true));
     loadPlatforms();
     // SettingsPage fires this after saving so the tabs update without a reload.
@@ -603,7 +607,9 @@ export default function Layout() {
         (!item.requiresAi || aiEnabled)
         && (!item.requiresFamily || !lmFamiliesOff.has(item.requiresFamily))
         && (!item.hiddenWhenPlatform || !enabledPlatformIds.includes(item.hiddenWhenPlatform))
-        && (authLoading || hasPermission(requiredNavPermission(navPlatformKey, item)))),
+        && (authLoading || (item.permission === 'any-platform'
+          ? visiblePlatforms.some(p => p.id !== OPS_ENTRY.id)
+          : hasPermission(requiredNavPermission(navPlatformKey, item))))),
     }))
     .filter(group => group.items.length > 0);
 

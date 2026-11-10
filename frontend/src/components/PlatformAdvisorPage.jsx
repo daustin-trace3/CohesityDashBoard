@@ -84,7 +84,7 @@ function EmailModal({ basePath, slug, label, onClose }) {
   );
 }
 
-export default function PlatformAdvisorPage({ platform, brand, title = 'AI Advisor', tabs }) {
+export default function PlatformAdvisorPage({ platform, brand, title = 'AI Advisor', tabs, canGenerate = true }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [states, setStates] = useState({}); // slug -> { enabled, report }
   const [running, setRunning] = useState(false);
@@ -189,7 +189,7 @@ export default function PlatformAdvisorPage({ platform, brand, title = 'AI Advis
                 </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                {report?.content && (
+                {canGenerate && report?.content && (
                   <button
                     onClick={() => setEmailOpen(true)}
                     title="Email this report via the alert SMTP server"
@@ -198,13 +198,15 @@ export default function PlatformAdvisorPage({ platform, brand, title = 'AI Advis
                     <Mail size={13} /> Email
                   </button>
                 )}
-                <button
-                  onClick={run}
-                  disabled={!enabled || running}
-                  className="flex items-center gap-1.5 text-xs font-medium px-3 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-50 cursor-pointer"
-                >
-                  <Sparkles size={13} /> {report?.content ? 'Re-run' : 'Generate report'}
-                </button>
+                {canGenerate && (
+                  <button
+                    onClick={run}
+                    disabled={!enabled || running}
+                    className="flex items-center gap-1.5 text-xs font-medium px-3 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-50 cursor-pointer"
+                  >
+                    <Sparkles size={13} /> {report?.content ? 'Re-run' : 'Generate report'}
+                  </button>
+                )}
               </div>
             </div>
 
@@ -237,7 +239,7 @@ export default function PlatformAdvisorPage({ platform, brand, title = 'AI Advis
                 <p className="text-ink-muted text-xs py-12 text-center">
                   {error ? <span className="text-red-400">{error}</span>
                     : state === undefined ? 'Loading…'
-                      : 'No report yet. Generate one to analyze the current data.'}
+                      : canGenerate ? 'No report yet. Generate one to analyze the current data.' : 'No report has been generated yet.'}
                 </p>
               )}
             </div>

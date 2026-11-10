@@ -1,5 +1,6 @@
 import { Sunrise, FileKey, UserCheck, ShieldCheck, History, Network, Coins, CalendarClock, Gauge, Bot } from 'lucide-react';
 import PlatformAdvisorPage from '../../components/PlatformAdvisorPage';
+import { useAuth } from '../../auth/AuthContext';
 
 const BRAND = '#8FA3B0';
 
@@ -27,5 +28,6 @@ const TABS = [
 ];
 
 export default function EstateAdvisorPage() {
-  return <PlatformAdvisorPage platform="estate" brand={BRAND} title="Estate Advisor" tabs={TABS} />;
+  const { hasPermission } = useAuth();
+  return <PlatformAdvisorPage platform="estate" brand={BRAND} title="Estate Advisor" tabs={TABS} canGenerate={hasPermission('ops:*:manage')} />;
 }

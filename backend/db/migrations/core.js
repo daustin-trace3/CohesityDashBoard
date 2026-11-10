@@ -788,4 +788,22 @@ module.exports = [
       `);
     },
   },
+  // Ops grants for the seeded Operator/Viewer groups: Operator manages the Ops
+  // Agent, Estate Advisor and Service Status analyses, Viewer reads them. Admin's
+  // *:*:* already covers the ops namespace.
+  {
+    version: 37, // feat/multi-tenant numbers this v38
+    up(db) {
+      const getGroupId = db.prepare('SELECT id FROM groups WHERE name = ?');
+      const insertGrant = db.prepare(
+        'INSERT OR IGNORE INTO role_grants (subject_type, subject_id, permission, created_at) VALUES (?, ?, ?, ?)'
+      );
+      const now = new Date().toISOString();
+      const grants = { Operator: 'ops:*:manage', Viewer: 'ops:*:view' };
+      for (const [groupName, permission] of Object.entries(grants)) {
+        const row = getGroupId.get(groupName);
+        if (row) insertGrant.run('group', row.id, permission, now);
+      }
+    },
+  },
 ];

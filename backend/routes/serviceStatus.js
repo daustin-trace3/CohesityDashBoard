@@ -2,9 +2,13 @@
 // analysis. Reachable to any authenticated caller, same as /api/ops.
 const express = require('express');
 const svc = require('../services/serviceStatus');
-const { filterByGrants, grantsOf, canViewPlatform } = require('../services/platformAccess');
+const { filterByGrants, grantsOf, canViewPlatform, requireOps } = require('../services/platformAccess');
 
 const router = express.Router();
+
+// App service events belong to the rollup (no platform grant of their own);
+// every other event follows its platform's view grant.
+const eventVisible = (req, platform) => platform === 'appservice' || canViewPlatform(grantsOf(req), platform);
 
 router.get('/board', (req, res, next) => {
   try {
@@ -50,7 +54,7 @@ router.get('/events', (req, res, next) => {
     if (!date || typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
     }
-    res.json({ events: svc.listEvents({ platform, date }) });
+    res.json({ events: svc.listEvents({ platform, date }).filter((e) => eventVisible(req, e.platform || platform)) });
   } catch (err) {
     next(err);
   }
@@ -59,15 +63,17 @@ router.get('/events', (req, res, next) => {
 router.get('/events/:id', (req, res, next) => {
   try {
     const event = svc.getEvent(Number(req.params.id));
-    if (!event) return res.status(404).json({ error: 'Event not found.' });
+    if (!event || !eventVisible(req, event.platform)) return res.status(404).json({ error: 'Event not found.' });
     res.json(event);
   } catch (err) {
     next(err);
   }
 });
 
-router.post('/events/:id/analyze', async (req, res, next) => {
+router.post('/events/:id/analyze', requireOps('manage'), async (req, res, next) => {
   try {
+    const existing = svc.getEvent(Number(req.params.id));
+    if (existing && !eventVisible(req, existing.platform)) return res.status(404).json({ error: 'Event not found.' });
     const result = await svc.analyzeEvent(Number(req.params.id), { force: true });
     res.json(result);
   } catch (err) {
@@ -84,7 +90,7 @@ router.post('/events/:id/analyze', async (req, res, next) => {
 
 /** POST /sweep , manual trigger for testing/demo (the interval calls sweep()
  *  itself every minute once initServiceStatus() runs). */
-router.post('/sweep', async (req, res, next) => {
+router.post('/sweep', requireOps('manage'), async (req, res, next) => {
   try {
     await svc.sweep();
     res.json({ ok: true });
