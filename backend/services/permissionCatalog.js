@@ -5,7 +5,8 @@
 // host fallback map, and from the grants already stored so an existing grant
 // always renders even when no route reveals its section.
 const registry = require('../core/registry');
-const { BUILTIN_PLATFORMS } = require('./platformList');
+// icc-phase1 has no services/platformList; platformMeta carries the same labels.
+const { BUILTIN } = require('./platformMeta');
 
 const CATEGORY_LABELS = [
   ['backup', 'Backup'],
@@ -104,7 +105,7 @@ function walkRouter(router, depth = 0) {
 }
 
 function builtinLabel(id) {
-  const row = BUILTIN_PLATFORMS.find((p) => p.id === id);
+  const row = BUILTIN[id];
   return row ? row.label : null;
 }
 
@@ -143,7 +144,7 @@ function derivePlatforms() {
   const entries = registry.listEntries();
   const pub = new Map(registry.listPlugins().map((p) => [p.id, p]));
   const byId = new Map(entries.map((e) => [e.id, e]));
-  const cohesitySynthetic = !byId.has('cohesity') && registry.isBuiltinPresent('cohesity');
+  const cohesitySynthetic = !byId.has('cohesity') && (typeof registry.isBuiltinPresent === 'function' ? registry.isBuiltinPresent('cohesity') : true); // icc-phase1: Cohesity is always built in
   const key = entries
     .map((e) => {
       const p = pub.get(e.id) || {};

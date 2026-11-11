@@ -68,7 +68,7 @@ describe('PUT /api/users/grants/:subjectType/:subjectId', () => {
 describe('GET /api/users/permission-catalog', () => {
   it('answers 200 with categories, ops, admin and all', async () => {
     const registry = require('../core/registry');
-    registry.markBuiltin('cohesity');
+    if (registry.markBuiltin) registry.markBuiltin('cohesity'); // absent on icc-phase1, where cohesity is always built in
     const r = await get('/api/users/permission-catalog');
     expect(r.status).toBe(200);
     expect(Array.isArray(r.body.categories)).toBe(true);

@@ -77,10 +77,8 @@ describe('demoWriteGuard', () => {
 });
 
 describe('demoWriteGuard grants editor path', () => {
-  it('refuses the grants replace for the demo account id and allows another id', () => {
-    demoWriteGuard._setDemoIdForTests(42);
+  it('refuses the grants replace in demo mode (allow-list variant, no per-account rule)', () => {
     expect(run('PUT', '/users/grants/user/42').nexted).toBe(false);
-    expect(run('PUT', '/users/grants/user/43').nexted).toBe(true);
-    expect(run('PUT', '/users/grants/group/42').nexted).toBe(true);
+    expect(run('PUT', '/users/grants/group/42').nexted).toBe(false);
   });
 });

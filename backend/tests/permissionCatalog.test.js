@@ -105,7 +105,7 @@ describe('permissionCatalog', () => {
   });
 
   it('adds a synthetic Cohesity row with the fixed section list when cohesity is built in', () => {
-    registry.markBuiltin('cohesity');
+    if (registry.markBuiltin) registry.markBuiltin('cohesity'); // absent on icc-phase1, where cohesity is always built in
     const p = find(buildCatalog({}), 'cohesity');
     expect(p.category).toBe('backup');
     expect(p.row.sections.map((s) => s.key)).toEqual(COHESITY_SECTIONS.slice().sort());
@@ -129,8 +129,8 @@ describe('permissionCatalog', () => {
     expect(cat.all.ns).toBe('*');
   });
 
-  it('prefers the platformList label when the registry name is longer than 24 chars', () => {
-    registry.registerPlugin(manifest('hyperv', { name: 'Microsoft Hyper-V virtualization estate' }));
-    expect(find(buildCatalog({}), 'hyperv').row.label).toBe('Microsoft Hyper-V');
+  it('prefers the platformMeta label when the registry name is longer than 24 chars', () => {
+    registry.registerPlugin(manifest('ariaops', { name: 'Aria Operations virtualization estate' }));
+    expect(find(buildCatalog({}), 'ariaops').row.label).toBe('Aria Operations');
   });
 });
