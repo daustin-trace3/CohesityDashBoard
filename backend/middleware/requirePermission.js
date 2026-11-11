@@ -20,19 +20,27 @@ function requirePermission(nsOrFn) {
   };
 }
 
+/** First path segment of a request path, without a trailing extension. */
+function sectionOf(reqPath) {
+  const seg = String(reqPath || '').split('/').filter(Boolean)[0] || '*';
+  const m = /^(.+)\.[a-z0-9]+$/i.exec(seg);
+  return m ? m[1] : seg;
+}
+
 /**
  * Standard mapping: `<ns>:<firstPathSegment>:<view|manage>`, GET is view,
- * everything else is manage. `ns` may itself be a function of req (e.g. the
+ * everything else is manage. A trailing extension is dropped from the section
+ * (`interfaces.csv` is the `interfaces` section). `ns` may itself be a function of req (e.g. the
  * dispatcher passes req.params.pluginId).
  * @param {string | ((req: import('express').Request) => string)} nsOrFn
  */
 function platformPermission(nsOrFn) {
   return (req) => {
     const ns = typeof nsOrFn === 'function' ? nsOrFn(req) : nsOrFn;
-    const section = req.path.split('/').filter(Boolean)[0] || '*';
+    const section = sectionOf(req.path);
     const level = req.method === 'GET' ? 'view' : 'manage';
     return `${ns}:${section}:${level}`;
   };
 }
 
-module.exports = { requirePermission, platformPermission };
+module.exports = { requirePermission, platformPermission, sectionOf };

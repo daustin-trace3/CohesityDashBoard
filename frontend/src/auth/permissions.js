@@ -18,6 +18,13 @@ function segmentMatches(grantSeg, reqSeg) {
   return grantSeg === '*' || grantSeg === reqSeg;
 }
 
+// Rule change A: a wildcard namespace matches every namespace except admin.
+// admin requirements are met only by grants whose namespace is literally admin.
+function namespaceMatches(grantNs, reqNs) {
+  if (grantNs === '*') return reqNs !== 'admin';
+  return grantNs === reqNs;
+}
+
 function levelMatches(grantLevel, reqLevel) {
   if (grantLevel === '*') return true;
   if (grantLevel === reqLevel) return true;
@@ -32,7 +39,7 @@ export function matches(grant, required) {
   const r = parse(required);
   if (!g || !r) return false;
   return (
-    segmentMatches(g.namespace, r.namespace) &&
+    namespaceMatches(g.namespace, r.namespace) &&
     segmentMatches(g.section, r.section) &&
     levelMatches(g.level, r.level)
   );

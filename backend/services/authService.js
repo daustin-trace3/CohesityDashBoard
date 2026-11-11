@@ -4,7 +4,7 @@ const argon2 = require('argon2');
 const crypto = require('crypto');
 const db = require('../db/adminDb');
 const logger = require('../utils/logger');
-const { resolveGrants } = require('./rbac');
+const { resolveGrants, ALL_ACCESS } = require('./rbac');
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const REFRESH_THRESHOLD_MS = 6 * 24 * 60 * 60 * 1000; // sliding refresh once <6d left
@@ -163,7 +163,7 @@ function authEnabled() {
 
 /** The identity every request gets while auth is disabled. */
 function anonymousAuth() {
-  return { kind: 'anonymous', name: 'open-access', grants: ['*:*:*'] };
+  return { kind: 'anonymous', name: 'open-access', grants: ALL_ACCESS.slice() };
 }
 
 module.exports = {

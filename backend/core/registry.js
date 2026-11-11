@@ -14,6 +14,10 @@ const RESERVED_IDS = new Set([
 
 const ID_PATTERN = /^[a-z0-9-]+$/;
 
+// Optional manifest.category values (services/permissionCatalog.js groups the
+// grants editor by them). Anything else is ignored with one warning.
+const MANIFEST_CATEGORIES = ['backup', 'storage', 'virtualization', 'network', 'dr', 'other'];
+
 const plugins = new Map(); // id -> { manifest, router, status, error, enabled }
 
 let coreApiRef = null;
@@ -82,6 +86,11 @@ function validateManifest(manifest) {
     throw new Error(`plugin '${id}': manifest.createRouter must be a function`);
   }
   validateDerived(manifest);
+  if (manifest.category !== undefined && !MANIFEST_CATEGORIES.includes(manifest.category)) {
+    const msg = `[registry] plugin '${id}': manifest.category '${String(manifest.category)}' is not one of ${MANIFEST_CATEGORIES.join(', ')}; ignored`;
+    const logger = coreApiRef && coreApiRef.logger;
+    if (logger) logger.warn(msg); else console.warn(msg);
+  }
 }
 
 /** Derived platforms (derivedFrom + vendorKeys): fed by a connector, no
@@ -218,6 +227,14 @@ function getPollerHandle(id) {
 
 function listPlugins() {
   return Array.from(plugins.values()).map(toPublic);
+}
+
+/** Registered entries with their manifest and router, for read-only consumers
+ *  such as the permission catalog (which walks built-in routers for sections). */
+function listEntries() {
+  return Array.from(plugins.values()).map((e) => ({
+    id: e.id, manifest: e.manifest, router: e.router, status: e.status,
+  }));
 }
 
 /**
@@ -412,6 +429,8 @@ module.exports = {
   getPlugin,
   getPollerHandle,
   listPlugins,
+  listEntries,
+  MANIFEST_CATEGORIES,
   getServer360Providers,
   getTopologyProviders,
   getIncidentEvidenceProviders,

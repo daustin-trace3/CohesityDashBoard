@@ -34,7 +34,7 @@ describe('optional auth (open-access mode)', () => {
     const res = await agent.get('/api/auth/session');
     expect(res.status).toBe(200);
     expect(res.body.authEnabled).toBe(false);
-    expect(res.body.user.permissions).toEqual(['*:*:*']);
+    expect(res.body.user.permissions).toEqual(['*:*:*', 'admin:*:*']);
     expect(res.body.user.id).toBeNull();
   });
 

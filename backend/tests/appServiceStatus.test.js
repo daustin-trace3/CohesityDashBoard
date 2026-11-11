@@ -87,7 +87,7 @@ function seedHealthyApp(tag = 'usage-id: AA00001721', count = 20) {
 beforeAll(() => {
   app = express();
   app.use(express.json());
-  app.use((req, res, next) => { req.auth = { grants: ['*:*:*'], user: { username: 'tester' } }; next(); });
+  app.use((req, res, next) => { req.auth = { grants: ['*:*:*', 'admin:*:*'], user: { username: 'tester' } }; next(); });
   app.use('/api/app-services', appServicesRouter);
 });
 

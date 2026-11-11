@@ -193,7 +193,7 @@ describe('/api/system/health', () => {
   let grants;
   let app;
   beforeEach(() => {
-    grants = ['*:*:*'];
+    grants = ['*:*:*', 'admin:*:*'];
     app = express();
     app.use((req, res, next) => { req.auth = { grants }; next(); });
     app.use('/api/system/health', router);
