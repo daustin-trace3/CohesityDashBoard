@@ -187,7 +187,7 @@ export default function PollerStatusPanel({ chipState, title, status, scope, lab
                                 <button
                                   type="button"
                                   onClick={() => pollNow(r)}
-                                  className="inline-flex items-center gap-1 px-2 py-1 rounded border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 font-semibold"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-brand/15 border border-brand/40 text-brand hover:bg-brand/25 hover:border-brand/60 font-semibold cursor-pointer"
                                 >
                                   <RefreshCw size={11} /> Poll now
                                 </button>
