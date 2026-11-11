@@ -129,15 +129,15 @@ function Overview({ data }) {
           {recent.length === 0 ? (
             <p className="text-[13px] text-ink-muted">No errors or warnings logged since the processes started.</p>
           ) : (
-            <table className="w-full text-[13px]">
-              <thead><tr className={thCls}><th className="text-left py-1.5 pr-3">Time</th><th className="text-left pr-3">Proc</th><th className="text-left pr-3">Level</th><th className="text-left">Message</th></tr></thead>
+            <table className="w-full table-fixed text-[13px]">
+              <thead><tr className={thCls}><th className="text-left py-1.5 pr-3 w-48">Time</th><th className="text-left pr-3 w-20">Proc</th><th className="text-left pr-3 w-20">Level</th><th className="text-left">Message</th></tr></thead>
               <tbody>
                 {recent.map((r, i) => (
                   <tr key={`${r.src}-${r.at}-${i}`} className="border-b border-cohesity-border/40 align-top">
                     <td className={`${tdCls} whitespace-nowrap`}>{fmtWhen(r.at)}</td>
                     <td className="py-1.5 pr-3">{r.src}</td>
                     <td className="py-1.5 pr-3"><Badge tone={r.level === 'error' ? 'crit' : 'warn'}>{r.level}</Badge></td>
-                    <td className="py-1.5 text-ink-muted break-words">{r.msg}</td>
+                    <td className="py-1.5 text-ink-muted min-w-0 [overflow-wrap:anywhere] whitespace-pre-wrap">{r.msg}</td>
                   </tr>
                 ))}
               </tbody>
