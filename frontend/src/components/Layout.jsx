@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bot, Sparkles,
-  Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity, Crosshair, Waypoints, LayoutGrid, ChevronDown, HelpCircle, HeartPulse, Layers, Boxes,
+  Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity, Crosshair, Waypoints, LayoutGrid, ChevronDown, HelpCircle, HeartPulse, Layers, Boxes, ArrowLeft,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import GlobalSearch from './GlobalSearch';
@@ -110,7 +110,12 @@ export default function Layout() {
   // header title and the sync chip follow the platform the user came from
   // (sessionStorage icc.lastPlatform, written below), Ops when nothing is known.
   const isAdminPath = pathname.startsWith('/admin') || pathname.startsWith('/login');
+  // Global Settings belongs to no platform: side nav, header title, chips and
+  // the switcher highlight go neutral there (Doug, 2026-11-11). The login page
+  // keeps the remembered platform.
+  const isGlobalSettings = pathname.startsWith('/admin');
   const navPath = (() => {
+    if (isGlobalSettings) return '/admin';
     if (!isAdminPath) return pathname;
     let last = null;
     try { last = sessionStorage.getItem('icc.lastPlatform'); } catch { last = null; }
@@ -242,7 +247,7 @@ export default function Layout() {
 
   // Sync chip is scoped to the platform being viewed (Pure pages show Pure
   // freshness, etc.); Cohesity pages also fold in the Helios licensing feed.
-  const syncScope = isOps ? 'all' : (platformKey || derivedActive?.id || 'cohesity');
+  const syncScope = (isOps || isGlobalSettings) ? 'all' : (platformKey || derivedActive?.id || 'cohesity');
   const { status: pollerStatus, refetch: refetchPoller, anySyncing, anyStale, anyError, anyDelayed, hasEntities, newestCapture } = usePollerStatus(syncScope);
 
   // What's New: the header button opens the release notes for the current
@@ -600,7 +605,7 @@ export default function Layout() {
   // Hide items the user lacks permission for. While auth is still loading,
   // show everything (no flicker-hide). AI-dependent items (requiresAi) stay
   // hidden until an AI provider token is configured.
-  const activeNavGroups = baseNavGroups
+  const filteredNavGroups = baseNavGroups
     .map(group => ({
       ...group,
       items: group.items.filter(item =>
@@ -612,6 +617,11 @@ export default function Layout() {
           : hasPermission(requiredNavPermission(navPlatformKey, item))))),
     }))
     .filter(group => group.items.length > 0);
+  // On Global Settings the sidebar shows one way back to where the user came from.
+  const backTarget = visiblePlatforms.find(p => p.id === (rememberedId || 'ops')) || OPS_ENTRY;
+  const activeNavGroups = isGlobalSettings
+    ? [{ label: 'Global Settings', items: [{ label: `Back to ${backTarget.id === 'ops' ? 'Ops Monitor' : backTarget.label}`, route: backTarget.route, icon: ArrowLeft, isActive: () => false }] }]
+    : filteredNavGroups;
 
   // Sidebar footer status — per-node health on a platform, API reachability elsewhere.
   const noun = isNetapp ? 'cluster' : isZerto ? 'site' : isVcenter ? 'host' : isDell ? 'device' : isAria ? 'instance' : isAriaOps ? 'resource' : isNetbackup ? 'server' : isAws ? 'instance' : isProxmox ? 'guest' : isBrocade ? 'fabric' : isBluecat ? 'network' : isLogicmonitor ? 'portal' : 'array';
@@ -632,14 +642,14 @@ export default function Layout() {
     <div className="h-screen flex flex-row bg-transparent overflow-hidden">
       {/* Experimental switcher style: far-left platform icon rail */}
       {multiPlatform && switcherMode === 'rail' && (
-        <PlatformRail platforms={visiblePlatforms} currentId={currentPlatformId} onSelect={gotoPlatform} status={pollerStatus} />
+        <PlatformRail platforms={visiblePlatforms} currentId={isGlobalSettings ? null : currentPlatformId} onSelect={gotoPlatform} status={pollerStatus} />
       )}
       {/* Sidebar */}
       <aside className={`${collapsed ? 'w-[60px]' : 'w-[218px]'} bg-surface-base/80 border-r border-cohesity-border flex flex-col flex-shrink-0 transition-all duration-200`}>
         <BrandMark
           collapsed={collapsed}
-          label={isOps ? 'Operations' : isPure ? 'Pure' : isNetapp ? 'NetApp' : isZerto ? 'Zerto' : isVcenter ? 'vCenter' : isDell ? 'Dell' : isAria ? 'Aria' : isAriaOps ? 'Aria Ops' : isNetbackup ? 'NetBackup' : isAws ? 'AWS' : isProxmox ? 'Proxmox VE' : isBrocade ? 'Brocade SAN' : isBluecat ? 'BlueCat' : isLogicmonitor ? 'LogicMonitor' : activePluginPlatform ? activePluginPlatform.label : 'Cohesity'}
-          accent={isPure ? '#FF6B00' : isNetapp ? '#0067C5' : isZerto ? '#EE3124' : isVcenter ? '#0091DA' : isDell ? '#007DB8' : isAria ? '#00A2C7' : isAriaOps ? '#78BE20' : isNetbackup ? '#B1181E' : isAws ? '#FF9900' : isProxmox ? '#E57000' : isBrocade ? '#CC092F' : isBluecat ? '#0057B8' : isLogicmonitor ? '#1A73E8' : activePluginPlatform ? activePluginPlatform.color : undefined}
+          label={isGlobalSettings ? 'ICC' : isOps ? 'Operations' : isPure ? 'Pure' : isNetapp ? 'NetApp' : isZerto ? 'Zerto' : isVcenter ? 'vCenter' : isDell ? 'Dell' : isAria ? 'Aria' : isAriaOps ? 'Aria Ops' : isNetbackup ? 'NetBackup' : isAws ? 'AWS' : isProxmox ? 'Proxmox VE' : isBrocade ? 'Brocade SAN' : isBluecat ? 'BlueCat' : isLogicmonitor ? 'LogicMonitor' : activePluginPlatform ? activePluginPlatform.label : 'Cohesity'}
+          accent={isGlobalSettings ? undefined : isPure ? '#FF6B00' : isNetapp ? '#0067C5' : isZerto ? '#EE3124' : isVcenter ? '#0091DA' : isDell ? '#007DB8' : isAria ? '#00A2C7' : isAriaOps ? '#78BE20' : isNetbackup ? '#B1181E' : isAws ? '#FF9900' : isProxmox ? '#E57000' : isBrocade ? '#CC092F' : isBluecat ? '#0057B8' : isLogicmonitor ? '#1A73E8' : activePluginPlatform ? activePluginPlatform.color : undefined}
         />
 
         <nav className="flex-1 overflow-y-auto py-3 flex flex-col gap-4" aria-label="Primary">
@@ -710,7 +720,9 @@ export default function Layout() {
               <div className="leading-tight min-w-0">
                 <p className="text-[11px] font-medium text-ink truncate">{footerHeadline}</p>
                 <p className="text-[10px] text-ink-faint tnum">
-                  {isOps
+                  {isGlobalSettings
+                    ? `${visiblePlatforms.filter(p => p.id !== 'ops').length} platform${visiblePlatforms.length === 2 ? '' : 's'} enabled`
+                    : isOps
                     ? `${opsTotals?.platforms ?? 0} platform${opsTotals?.platforms === 1 ? '' : 's'} monitored`
                     : isPlatform
                     ? (platformObjects != null && isLogicmonitor
@@ -740,14 +752,14 @@ export default function Layout() {
         <header className="relative z-30 h-14 bg-surface-base/70 backdrop-blur border-b border-cohesity-border flex-shrink-0 flex items-center gap-2 px-4">
           {/* Experimental switcher styles: dropdown / grid launcher in the top bar */}
           {multiPlatform && switcherMode === 'dropdown' && (
-            <PlatformDropdown platforms={visiblePlatforms} currentId={currentPlatformId} onSelect={gotoPlatform} status={pollerStatus} />
+            <PlatformDropdown platforms={visiblePlatforms} currentId={isGlobalSettings ? null : currentPlatformId} onSelect={gotoPlatform} status={pollerStatus} />
           )}
           {multiPlatform && switcherMode === 'grid' && (
-            <PlatformGrid platforms={visiblePlatforms} currentId={currentPlatformId} onSelect={gotoPlatform} status={pollerStatus} />
+            <PlatformGrid platforms={visiblePlatforms} currentId={isGlobalSettings ? null : currentPlatformId} onSelect={gotoPlatform} status={pollerStatus} />
           )}
           {/* Left group — shrinks when viewport narrows so right controls are never pushed off */}
           <div className="flex items-center gap-2 min-w-0 flex-shrink overflow-hidden">
-            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isOps ? 'Ops Monitor' : isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : isVcenter ? 'vCenter Dashboard' : isDell ? 'Dell Dashboard' : isAria ? 'Aria Automation Dashboard' : isAriaOps ? 'Aria Operations Dashboard' : isNetbackup ? 'NetBackup Dashboard' : isAws ? 'AWS Dashboard' : isProxmox ? 'Proxmox VE Dashboard' : isBrocade ? 'Brocade SAN Dashboard' : isBluecat ? 'BlueCat Address Manager Dashboard' : isLogicmonitor ? 'LogicMonitor Dashboard' : activePluginPlatform ? `${activePluginPlatform.label} Dashboard` : 'Global Cluster Dashboard'}</h1>
+            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isGlobalSettings ? 'Global Settings' : isOps ? 'Ops Monitor' : isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : isVcenter ? 'vCenter Dashboard' : isDell ? 'Dell Dashboard' : isAria ? 'Aria Automation Dashboard' : isAriaOps ? 'Aria Operations Dashboard' : isNetbackup ? 'NetBackup Dashboard' : isAws ? 'AWS Dashboard' : isProxmox ? 'Proxmox VE Dashboard' : isBrocade ? 'Brocade SAN Dashboard' : isBluecat ? 'BlueCat Address Manager Dashboard' : isLogicmonitor ? 'LogicMonitor Dashboard' : activePluginPlatform ? `${activePluginPlatform.label} Dashboard` : 'Global Cluster Dashboard'}</h1>
             {/* Plugin platforms have no entity-feed endpoints — hide the count chip
                 rather than showing the Cohesity fall-through. */}
             {isOps ? (
@@ -757,7 +769,7 @@ export default function Layout() {
                   {`${opsTotals.platforms} Platform${opsTotals.platforms !== 1 ? 's' : ''}`}
                 </span>
               )
-            ) : !activePluginPlatform && (
+            ) : !isGlobalSettings && !activePluginPlatform && (
             <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum flex-shrink-0">
               {isPlatform ? <HardDrive size={11} className="text-brand" /> : <Server size={11} className="text-brand" />}
               {isPlatform
@@ -775,7 +787,7 @@ export default function Layout() {
                   {opsTotals.critical} critical
                 </button>
               )
-            ) : activePluginPlatform ? null : isPlatform ? (
+            ) : (isGlobalSettings || activePluginPlatform) ? null : isPlatform ? (
               platformAlerts > 0 && (
                 <button
                   onClick={() => navigate(`/${platformKey}/alerts`)}
