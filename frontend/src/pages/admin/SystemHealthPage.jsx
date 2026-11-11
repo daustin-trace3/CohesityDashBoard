@@ -40,9 +40,14 @@ export function fmtDuration(ms) {
   if (v < 1000) return `${Math.round(v)} ms`;
   if (v < 60000) return `${(v / 1000).toFixed(1)} s`;
   const total = Math.round(v / 1000);
-  const m = Math.floor(total / 60);
-  const s = String(total % 60).padStart(2, '0');
-  return `${m}:${s}`;
+  if (total < 3600) {
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return s ? `${m}m ${s}s` : `${m}m`;
+  }
+  const h = Math.floor(total / 3600);
+  const m = Math.round((total % 3600) / 60);
+  return m ? `${h}h ${m}m` : `${h}h`;
 }
 
 function fmtWhen(iso) {

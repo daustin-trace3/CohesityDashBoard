@@ -67,6 +67,9 @@ describe('SystemHealthPage', () => {
     expect(fmtBytes(5 * 1024 * 1024)).toBe('5.0 MB');
     expect(fmtDuration(250)).toBe('250 ms');
     expect(fmtDuration(2500)).toBe('2.5 s');
-    expect(fmtDuration(65000)).toBe('1:05');
+    expect(fmtDuration(65000)).toBe('1m 5s');
+    expect(fmtDuration(120000)).toBe('2m');
+    expect(fmtDuration(3 * 3600000 + 7 * 60000)).toBe('3h 7m');
+    expect(fmtDuration(7200000)).toBe('2h');
   });
 });
