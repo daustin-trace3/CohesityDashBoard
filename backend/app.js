@@ -216,12 +216,10 @@ function createApp({ licenseGate = requireLicense } = {}) {
   app.use('/api/advisor', deprecated('/api/advisor', '/api/cohesity/advisor'), requirePermission(cohesityPermission('advisor')), advisorRouter);
   app.use('/api/licensing', deprecated('/api/licensing', '/api/cohesity/licensing'), requirePermission(cohesityPermission('licensing')), licensingRouter);
 
-  // /api/poller/status is reachable to any authenticated caller; every other
-  // poller endpoint (manual trigger) requires cohesity:poller:manage.
-  app.use('/api/poller', (req, res, next) => {
-    if (req.path === '/status') return next();
-    return requirePermission(() => 'cohesity:poller:manage')(req, res, next);
-  }, pollerRouter);
+  // /api/poller/status is open to any signed-in caller, the per-platform
+  // /sources poll checks its own grant, every other poller endpoint (Cohesity
+  // manual trigger) requires cohesity:poller:manage (routes/poller.js mountGate).
+  app.use('/api/poller', pollerRouter.mountGate, pollerRouter);
 
   app.use(
     '/api/settings',

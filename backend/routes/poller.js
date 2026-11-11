@@ -677,5 +677,22 @@ router.post('/sources/:platform/:entityId/poll', (req, res, next) => {
   }
 });
 
+/**
+ * Mount gate for /api/poller. GET /status is open to any signed-in caller and
+ * POST /sources/:platform/:id/poll checks its own per-platform grant above, so
+ * both pass through; every other poller endpoint is a Cohesity trigger and
+ * needs cohesity:poller:manage. Before 2026-11-11 the gate in app.js covered
+ * the sources route too, so a vCenter-only manager got 403 from Poll now.
+ */
+function mountGate(req, res, next) {
+  if (req.path === '/status' || req.path.startsWith('/sources/')) return next();
+  const grants = (req.auth && req.auth.grants) || [];
+  if (!hasPermission(grants, 'cohesity:poller:manage')) {
+    return res.status(403).json({ error: 'forbidden', required: 'cohesity:poller:manage' });
+  }
+  return next();
+}
+
 module.exports = router;
+module.exports.mountGate = mountGate;
 module.exports.buildStatus = buildStatus;

@@ -18,7 +18,7 @@ let grants = [];
 function miniApp() {
   const app = express();
   app.use((req, res, next) => { req.auth = { grants }; next(); });
-  app.use('/api/poller', router);
+  app.use('/api/poller', router.mountGate, router);
   return app;
 }
 
@@ -39,6 +39,22 @@ describe('POST /api/poller/sources/:platform/:entityId/poll', () => {
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ ok: true, platform: 'fakeplat', entityId: 7 });
     expect(trigger).toHaveBeenCalledWith(7);
+  });
+
+  it('lets a manager of that platform alone through the mount gate (no Cohesity grant needed)', async () => {
+    grants = ['fakeplat:*:manage'];
+    const res = await request(app).post('/api/poller/sources/fakeplat/7/poll');
+    expect(res.status).toBe(200);
+    expect(trigger).toHaveBeenCalledWith(7);
+  });
+
+  it('keeps the Cohesity trigger paths behind cohesity:poller:manage and leaves /status open', async () => {
+    grants = ['fakeplat:*:manage'];
+    const trig = await request(app).post('/api/poller/trigger/1');
+    expect(trig.status).toBe(403);
+    expect(trig.body.required).toBe('cohesity:poller:manage');
+    const status = await request(app).get('/api/poller/status');
+    expect(status.status).not.toBe(403);
   });
 
   it('answers 404 when the platform has no poller handle', async () => {
