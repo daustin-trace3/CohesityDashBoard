@@ -8,7 +8,7 @@
 const crypto = require('crypto');
 const { SAML, ValidateInResponseTo } = require('@node-saml/node-saml');
 const { XMLParser } = require('fast-xml-parser');
-const db = require('../db/database');
+const db = require('../db/adminDb');
 
 const NAMEID_EMAIL = 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress';
 

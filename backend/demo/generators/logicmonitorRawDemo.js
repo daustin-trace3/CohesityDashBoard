@@ -1,3 +1,4 @@
+const { adminOf } = require('../../db/adminSplit');
 // Demo rows for the raw DataSource store (round 11, WP-R). Derived from the catalog metric
 // rows the generator already wrote (lm_ds_metrics), so every seeded instance has one
 // lm_ds_values row per catalog metric (datapoint = the datapoint the catalog read) plus two
@@ -77,7 +78,7 @@ function seedRawValues(db, { sourceId }) {
           severity: 'info', label: 'Raw counter far above normal', instanceMatch: '', deviceMatch: '', enabled: true,
         });
       }
-      db.prepare(`INSERT INTO app_settings (key, value, updated_at) VALUES ('lm_raw_rules', ?, datetime('now'))
+      adminOf(db).prepare(`INSERT INTO app_settings (key, value, updated_at) VALUES ('lm_raw_rules', ?, datetime('now'))
         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(JSON.stringify(rules));
       out.rules = rules.length;
     }

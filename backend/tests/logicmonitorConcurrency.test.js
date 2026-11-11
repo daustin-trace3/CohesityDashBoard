@@ -2,6 +2,7 @@
  * pollMetrics at a bounded number of calls in flight: wall time drops with the
  * limit, results are identical, one failing DataSource does not stop the rest.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { createRequire } from 'module';
 
@@ -43,7 +44,7 @@ describe('pollMetrics concurrency', () => {
   afterEach(() => {
     if (spy) spy.mockRestore();
     spy = null;
-    db.prepare("DELETE FROM app_settings WHERE key = 'poller_calls_in_flight'").run();
+    adminOf(db).prepare("DELETE FROM app_settings WHERE key = 'poller_calls_in_flight'").run();
   });
 
   async function timed(limit, calls = 40, failId = null) {

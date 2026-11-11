@@ -6,6 +6,7 @@
  *
  * Loaded via createRequire so app.js resolves the same module instances.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createRequire } from 'module';
 import request from 'supertest';
@@ -41,7 +42,7 @@ describe('optional auth (open-access mode)', () => {
     const crypto = require('crypto');
     const db = require('../db/database');
     const key = 'icc_scoped_test_key';
-    db.prepare(`
+    adminOf(db).prepare(`
       INSERT INTO service_accounts (name, key_prefix, key_hash, permissions, is_active, created_at)
       VALUES ('scoped', ?, ?, ?, 1, ?)
     `).run(

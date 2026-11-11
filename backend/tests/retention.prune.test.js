@@ -2,6 +2,7 @@
  * Per-family checks that the converted prune sites follow the Data retention buckets:
  * 0 keeps rows, a lowered value removes them, a platform override beats the global.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { createRequire } from 'module';
 
@@ -15,7 +16,7 @@ const day = (daysAgo) => iso(daysAgo).slice(0, 10);
 const count = (sql) => db.prepare(sql).get().n;
 
 function clear() {
-  db.prepare("DELETE FROM app_settings WHERE key LIKE 'retention_%'").run();
+  adminOf(db).prepare("DELETE FROM app_settings WHERE key LIKE 'retention_%'").run();
 }
 
 // Hyper-V is a feat/multi-tenant platform only; icc-phase1 has no hyperv migrations or service.

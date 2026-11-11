@@ -16,6 +16,7 @@
 //     are replaced even when they are not in the dictionary.
 
 const db = require('../db/database');
+const { tableExistsAny } = require('../db/adminSplit');
 
 const IPV4_RE = /\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b/g;
 const IPV6_RE = /\b(?:[A-Fa-f0-9]{0,4}:){2,7}[A-Fa-f0-9]{1,4}\b/g;
@@ -352,7 +353,7 @@ function loadDictionary() {
   } catch { /* LogicMonitor tables not present on this instance */ }
 
   try {
-    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'idp_providers'").get()) {
+    if (tableExistsAny(db, 'idp_providers')) {
       add(db.prepare("SELECT name FROM idp_providers WHERE name IS NOT NULL AND name != ''").all(), 'SOURCE');
       add(db.prepare("SELECT external_name AS name FROM groups WHERE provider = 'idp' AND external_name IS NOT NULL AND external_name != ''").all(), 'SOURCE');
     }

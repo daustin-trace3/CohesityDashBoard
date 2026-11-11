@@ -6,6 +6,7 @@
 // deliberate trouble so the Overview issues panel demos every rule: a policy
 // failing 100% for 2 straight days, a client with no successful backup in 4
 // days, a disk pool pinned at 91% used, and a media server stuck DOWN.
+const { adminOf } = require('../../db/adminSplit');
 const { randInt, randFloat, pick, chance, rngFor } = require('./core');
 
 const POLICY_DEFS = [
@@ -42,7 +43,7 @@ function dayHour(rng) {
 function seedNetbackup(db, { now, encrypt }) {
   const nowIso = new Date(now).toISOString();
 
-  db.prepare(`
+  adminOf(db).prepare(`
     INSERT INTO app_settings (key, value, updated_at) VALUES ('platform_netbackup_enabled', '1', datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `).run();
@@ -560,7 +561,7 @@ function seedNetbackup(db, { now, encrypt }) {
   const roundTo = rawTarget < 20 ? 1 : rawTarget < 200 ? 10 : 50;
   let entitledTb = Math.round(rawTarget / roundTo) * roundTo;
   if (entitledTb < 1) entitledTb = 1;
-  db.prepare(`
+  adminOf(db).prepare(`
     INSERT INTO app_settings (key, value, updated_at) VALUES ('netbackup_entitled_tb', ?, datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `).run(String(entitledTb));

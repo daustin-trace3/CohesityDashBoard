@@ -1,3 +1,4 @@
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
@@ -7,7 +8,7 @@ const { setSetting } = require('../services/settings');
 const retention = require('../core/retention');
 
 function clearKeys() {
-  db.prepare("DELETE FROM app_settings WHERE key LIKE 'retention_%' OR key LIKE 'vcenter_%_history_days' OR key LIKE 'vcenter_event_retention_days' OR key LIKE 'lm_%_days' OR key LIKE 'brocade_event_retention_days' OR key LIKE 'zerto_event_retention_days' OR key LIKE 'hyperv_%_days'").run();
+  adminOf(db).prepare("DELETE FROM app_settings WHERE key LIKE 'retention_%' OR key LIKE 'vcenter_%_history_days' OR key LIKE 'vcenter_event_retention_days' OR key LIKE 'lm_%_days' OR key LIKE 'brocade_event_retention_days' OR key LIKE 'zerto_event_retention_days' OR key LIKE 'hyperv_%_days'").run();
 }
 
 describe('core/retention resolve', () => {
@@ -134,7 +135,7 @@ describe('core/retention legacy fold', () => {
     setSetting('vcenter_daily_history_days', '900');
     setSetting('vcenter_event_retention_days', '45');
     setSetting('lm_alert_retention_days', '200');
-    const written = retention.migrateLegacy(db);
+    const written = retention.migrateLegacy(adminOf(db));
     expect(written).toEqual(expect.arrayContaining([
       { platform: 'vcenter', bucket: 'trending', days: 900 },
       { platform: 'vcenter', bucket: 'events', days: 45 },
@@ -144,14 +145,14 @@ describe('core/retention legacy fold', () => {
     expect(retention.resolve('logicmonitor', 'trending').source).toBe('default');
     // second run: nothing to do, overrides untouched
     setSetting('vcenter_vm_history_days', '2000');
-    expect(retention.migrateLegacy(db)).toEqual([]);
+    expect(retention.migrateLegacy(adminOf(db))).toEqual([]);
     expect(retention.days('vcenter', 'trending')).toBe(900);
   });
 
   it('ignores legacy values that are blank or out of the bucket range', () => {
     setSetting('brocade_event_retention_days', '');
     setSetting('zerto_event_retention_days', '3');
-    expect(retention.migrateLegacy(db)).toEqual([]);
+    expect(retention.migrateLegacy(adminOf(db))).toEqual([]);
   });
 });
 

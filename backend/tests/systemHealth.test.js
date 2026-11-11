@@ -4,6 +4,7 @@
  * CJS modules are loaded through createRequire so the route, framework and test
  * share one module instance.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createRequire } from 'module';
 import request from 'supertest';
@@ -196,7 +197,7 @@ describe('/api/system/health', () => {
     app = express();
     app.use((req, res, next) => { req.auth = { grants }; next(); });
     app.use('/api/system/health', router);
-    db.prepare("DELETE FROM app_settings WHERE key IN ('icc_health_db_snapshot', 'icc_health_db_refresh_requested')").run();
+    adminOf(db).prepare("DELETE FROM app_settings WHERE key IN ('icc_health_db_snapshot', 'icc_health_db_refresh_requested')").run();
   });
 
   it('answers 200 with every top-level key and findings as an array', async () => {

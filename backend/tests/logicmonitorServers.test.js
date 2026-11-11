@@ -5,6 +5,7 @@
  * /lookup families. Datapoint names and enums are UNVERIFIED against a live portal; rows are
  * seeded by hand.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { createRequire } from 'module';
 import request from 'supertest';
@@ -38,7 +39,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   for (const t of TABLES) db.prepare(`DELETE FROM ${t}`).run();
-  db.prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
+  adminOf(db).prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
   sid = db.prepare('INSERT INTO lm_sources (name, company, auth_mode, encrypted_credentials) VALUES (?, ?, ?, ?)')
     .run('Acme', 'acme', 'lmv1', encrypt(JSON.stringify({ accessId: 'a', accessKey: 'b' }))).lastInsertRowid;
   hdsSeq = 1000;
@@ -165,7 +166,7 @@ describe('server-filesystem-full', () => {
     fsRow(1, '/', 70);
     fsRow(2, '/', 99);
     expect(issuesOf('server-filesystem-full')).toEqual([]);
-    db.prepare("INSERT INTO app_settings (key, value) VALUES ('lm_fs_warn_pct', '60')").run();
+    adminOf(db).prepare("INSERT INTO app_settings (key, value) VALUES ('lm_fs_warn_pct', '60')").run();
     const got = issuesOf('server-filesystem-full');
     expect(got.map((i) => i.target)).toEqual(['lin-a /']);
   });

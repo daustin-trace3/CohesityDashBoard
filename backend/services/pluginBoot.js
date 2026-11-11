@@ -19,7 +19,7 @@ function rmFile(file) {
 /** Drops a purged plugin's tables (LIKE '<id>_%'), its schema_migrations
  *  rows, and its plugins-table row. Never throws — a purge failure should
  *  not block boot. */
-function purgePluginData(db, id) {
+function purgePluginData(db, id, adminDb) {
   try {
     const rows = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE ?").all(`${id}_%`);
     const run = db.transaction(() => {
@@ -27,9 +27,10 @@ function purgePluginData(db, id) {
         db.prepare(`DROP TABLE IF EXISTS "${row.name}"`).run();
       }
       db.prepare('DELETE FROM schema_migrations WHERE scope = ?').run(id);
-      db.prepare('DELETE FROM plugins WHERE id = ?').run(id);
     });
     run();
+    // plugins is an admin table: never written inside a data transaction.
+    (adminDb || db).prepare('DELETE FROM plugins WHERE id = ?').run(id);
   } catch (err) {
     const logger = require('../utils/logger');
     logger.error(`[pluginBoot] purge of plugin '${id}' data failed:`, err.message);
@@ -39,7 +40,7 @@ function purgePluginData(db, id) {
 /** Processes plugins/<id>.remove (+ optional <id>.purge) and plugins/<id>.staged
  *  markers left by the installer/uninstaller, in that order — removals
  *  first, then staged upgrades — before any plugin backend is require()'d. */
-function runBootSwap({ db } = {}) {
+function runBootSwap({ db, adminDb } = {}) {
   const pluginsDir = getPluginsDir();
   if (!fs.existsSync(pluginsDir)) return;
 
@@ -53,7 +54,7 @@ function runBootSwap({ db } = {}) {
 
     if (purge) {
       const database = db || require('../db/database');
-      purgePluginData(database, id);
+      purgePluginData(database, id, adminDb || (db ? db : require('../db/adminDb')));
     }
 
     rmDir(path.join(pluginsDir, id));

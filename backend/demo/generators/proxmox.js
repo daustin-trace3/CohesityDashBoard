@@ -6,6 +6,7 @@
 // one at 88%, a failed vzdump, a stale-backup guest, a failed migration task,
 // a node cert expiring in 12 days, a lost-quorum cluster, and a
 // token-permissions warning on pve-lab-01.
+const { adminOf } = require('../../db/adminSplit');
 const { randInt, randFloat, pick, chance, rngFor } = require('./core');
 
 const GIB = 1024 ** 3;
@@ -14,7 +15,7 @@ function seedProxmox(db, { now, encrypt }) {
   const agoStmt = db.prepare("SELECT datetime('now', ?) d");
   const ago = (offset) => agoStmt.get(offset).d;
 
-  db.prepare(`
+  adminOf(db).prepare(`
     INSERT INTO app_settings (key, value, updated_at) VALUES ('platform_proxmox_enabled', '1', datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `).run();

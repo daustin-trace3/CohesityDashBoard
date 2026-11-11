@@ -5,6 +5,7 @@
  * The router is mounted the way app.js mounts it: ingest unauthenticated, the
  * admin router behind a fake session.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { createRequire } from 'module';
 import request from 'supertest';
@@ -52,7 +53,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   for (const t of ['lm_webhook_events', 'lm_alerts', 'lm_devices', 'lm_sources']) db.exec(`DELETE FROM ${t}`);
-  db.prepare("DELETE FROM app_settings WHERE key IN ('ops_agent_wake_requested', 'lm_webhook_rate_per_min', 'icc_base_url')").run();
+  adminOf(db).prepare("DELETE FROM app_settings WHERE key IN ('ops_agent_wake_requested', 'lm_webhook_rate_per_min', 'icc_base_url')").run();
   setSetting('platform_logicmonitor_enabled', '1');
   sid = db.prepare("INSERT INTO lm_sources (name, company, auth_mode, encrypted_credentials) VALUES ('Acme', 'acme', 'lmv1', 'x')").run().lastInsertRowid;
   db.prepare("INSERT INTO lm_devices (source_id, lm_device_id, name, display_name, role, is_network, host_status) VALUES (?, 301, '10.9.9.1', 'phx-sw-01', 'switch', 1, 'normal')").run(sid);

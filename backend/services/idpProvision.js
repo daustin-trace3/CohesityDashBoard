@@ -3,7 +3,7 @@
 // the local users table, and memberships written here carry
 // source = 'idp' so local and AD rows are never
 // touched. An IdP user is never linked to an existing local or AD account.
-const db = require('../db/database');
+const db = require('../db/adminDb');
 
 const SSO_PASSWORD_PLACEHOLDER = '!sso';
 

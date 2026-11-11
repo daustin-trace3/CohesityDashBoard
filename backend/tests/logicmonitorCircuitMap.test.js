@@ -4,6 +4,7 @@
  * promises (abq degraded, tus down, a Zayo site link flapping on 5 of the last 7 days).
  * Routes are mounted on a bare express app like logicmonitorRoutes.test.js.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { createRequire } from 'module';
 import { execFileSync } from 'child_process';
@@ -43,7 +44,7 @@ const TABLES = ['lm_circuit_events', 'lm_issue_history', 'lm_topology_links', 'l
 
 function wipe() {
   for (const t of TABLES) db.prepare(`DELETE FROM ${t}`).run();
-  db.prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
+  adminOf(db).prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
 }
 
 function ins(table, row) {

@@ -31,6 +31,8 @@ beforeAll(() => {
   });
 
   db = new Database(dbPath, { readonly: true });
+  // users, settings and the other admin tables live in the admin file (db/adminSplit.js).
+  db.exec("ATTACH DATABASE '" + dbPath.replace(/\.db$/, '.admin.db').replace(/\\/g, '/') + "' AS admin");
 }, 300000); // the full seed incl. the LM analytics stories and trend findings runs about 110 s alone, longer under the full suite
 
 afterAll(() => {

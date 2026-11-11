@@ -3,6 +3,7 @@
  * 404 for an unknown platform, and the permission gate (router mounted alone
  * with hand-set grants).
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { createRequire } from 'module';
 import express from 'express';
@@ -28,7 +29,7 @@ beforeAll(() => {
 });
 afterAll(() => { for (const id of FAKE) { try { registry.unregisterPlugin(id); } catch { /* already gone */ } } });
 beforeEach(() => {
-  db.prepare("DELETE FROM app_settings WHERE key LIKE 'retention_%' OR key = 'config_ledger_retention_days'").run();
+  adminOf(db).prepare("DELETE FROM app_settings WHERE key LIKE 'retention_%' OR key = 'config_ledger_retention_days'").run();
 });
 
 const get = () => request(app).get('/api/retention').set('x-api-key', API_KEY);

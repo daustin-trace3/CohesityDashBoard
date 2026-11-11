@@ -6,6 +6,7 @@
  * and the login route's directory path. The ldapts wire itself is exercised
  * only against a real domain (Doug's lab), not here.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { createRequire } from 'module';
 import request from 'supertest';
@@ -242,21 +243,21 @@ describe('sync + login', () => {
     agent = request.agent(app);
   });
   beforeEach(() => {
-    db.prepare("DELETE FROM user_groups WHERE source = 'ad'").run();
-    db.prepare("DELETE FROM users WHERE auth_provider = 'ad'").run();
-    db.prepare("DELETE FROM groups WHERE provider = 'ad'").run();
-    db.prepare('DELETE FROM auth_sessions').run();
+    adminOf(db).prepare("DELETE FROM user_groups WHERE source = 'ad'").run();
+    adminOf(db).prepare("DELETE FROM users WHERE auth_provider = 'ad'").run();
+    adminOf(db).prepare("DELETE FROM groups WHERE provider = 'ad'").run();
+    adminOf(db).prepare('DELETE FROM auth_sessions').run();
     const now = new Date().toISOString();
-    backupGroupId = db.prepare(`
+    backupGroupId = adminOf(db).prepare(`
       INSERT INTO groups (name, description, is_system, created_at, provider, external_id, external_dn, external_name)
       VALUES ('Backup Admins', 'linked', 0, ?, 'ad', 'g10', ?, 'Backup Admins')
     `).run(now, `cn=Backup Admins,ou=groups,${BASE}`).lastInsertRowid;
-    db.prepare("INSERT OR IGNORE INTO role_grants (subject_type, subject_id, permission, created_at) VALUES ('group', ?, 'cohesity:*:view', ?)").run(backupGroupId, now);
+    adminOf(db).prepare("INSERT OR IGNORE INTO role_grants (subject_type, subject_id, permission, created_at) VALUES ('group', ?, 'cohesity:*:view', ?)").run(backupGroupId, now);
   });
 
   it('runSync imports nested members, mirrors disabled state, and deactivates strays', async () => {
     const now = new Date().toISOString();
-    db.prepare("INSERT INTO users (username, password_hash, display_name, auth_provider, is_active, created_at, updated_at, external_id) VALUES ('zed', '!ad', 'Zed', 'ad', 1, ?, ?, 'gone')").run(now, now);
+    adminOf(db).prepare("INSERT INTO users (username, password_hash, display_name, auth_provider, is_active, created_at, updated_at, external_id) VALUES ('zed', '!ad', 'Zed', 'ad', 1, ?, ?, 'gone')").run(now, now);
     const r = await directorySync.runSync('manual');
     expect(r.status).toBe('ok');
     expect(r.groups).toBe(1);
@@ -275,7 +276,7 @@ describe('sync + login', () => {
 
   it('a local account with the same name is kept; the directory user is stored under its UPN and can log in qualified', async () => {
     const now = new Date().toISOString();
-    db.prepare("INSERT INTO users (username, password_hash, display_name, auth_provider, is_active, created_at, updated_at) VALUES ('bob', 'localhash', 'Local Bob', 'local', 1, ?, ?)").run(now, now);
+    adminOf(db).prepare("INSERT INTO users (username, password_hash, display_name, auth_provider, is_active, created_at, updated_at) VALUES ('bob', 'localhash', 'Local Bob', 'local', 1, ?, ?)").run(now, now);
     const r = await directorySync.runSync('manual');
     expect(r.message).toMatch(/share a name with a local account.*bob@lab.test/);
     expect(db.prepare("SELECT auth_provider, password_hash FROM users WHERE username = 'bob'").get()).toEqual({ auth_provider: 'local', password_hash: 'localhash' });
@@ -289,14 +290,14 @@ describe('sync + login', () => {
     expect(dom.body.user.username).toBe('bob@lab.test');
     const r2 = await directorySync.runSync('manual');
     expect(r2.created).toBe(0);
-    db.prepare("DELETE FROM users WHERE username IN ('bob', 'bob@lab.test')").run();
+    adminOf(db).prepare("DELETE FROM users WHERE username IN ('bob', 'bob@lab.test')").run();
   });
 
   it('admin-added memberships survive a sync, AD ones are reconciled', async () => {
     await directorySync.runSync('manual');
     const alice = db.prepare("SELECT id FROM users WHERE username = 'alice'").get();
     const viewer = db.prepare("SELECT id FROM groups WHERE name = 'Viewer'").get();
-    db.prepare("INSERT INTO user_groups (user_id, group_id, source) VALUES (?, ?, 'local')").run(alice.id, viewer.id);
+    adminOf(db).prepare("INSERT INTO user_groups (user_id, group_id, source) VALUES (?, ?, 'local')").run(alice.id, viewer.id);
     await directorySync.runSync('manual');
     const rows = db.prepare('SELECT group_id, source FROM user_groups WHERE user_id = ? ORDER BY group_id').all(alice.id);
     expect(rows).toEqual(expect.arrayContaining([{ group_id: viewer.id, source: 'local' }, { group_id: backupGroupId, source: 'ad' }]));

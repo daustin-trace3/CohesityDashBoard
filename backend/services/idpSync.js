@@ -5,7 +5,7 @@
 // in any linked group. Admin-added (local) and AD memberships are never touched.
 // Shape follows services/directorySync.js.
 
-const db = require('../db/database');
+const db = require('../db/adminDb');
 const logger = require('../utils/logger');
 const { isDemo } = require('./demoMode');
 const idpProviders = require('./idpProviders');

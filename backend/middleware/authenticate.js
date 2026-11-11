@@ -3,7 +3,7 @@
 // for existing automation), or a scoped service_accounts key. Replaces the
 // old blanket requireApiKey.
 const crypto = require('crypto');
-const db = require('../db/database');
+const db = require('../db/adminDb');
 const { validateSession, authEnabled, anonymousAuth } = require('../services/authService');
 const { getLicenseStatus } = require('../services/license');
 const { hasPermission } = require('../services/rbac');

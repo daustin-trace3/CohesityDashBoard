@@ -2,6 +2,7 @@
  * Global Settings: poller_calls_in_flight round trip and validation, and a load
  * check that every poller converted to the concurrency helper still parses.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createRequire } from 'module';
 import request from 'supertest';
@@ -14,7 +15,7 @@ const API_KEY = 'test-api-key';
 let app;
 
 beforeAll(() => { app = createApp({ licenseGate: (req, res, next) => next() }); });
-afterAll(() => { db.prepare("DELETE FROM app_settings WHERE key = 'poller_calls_in_flight'").run(); });
+afterAll(() => { adminOf(db).prepare("DELETE FROM app_settings WHERE key = 'poller_calls_in_flight'").run(); });
 
 describe('pollerCallsInFlight setting', () => {
   const put = (body) => request(app).put('/api/settings').set('x-api-key', API_KEY).send(body);

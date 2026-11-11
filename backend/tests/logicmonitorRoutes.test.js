@@ -6,6 +6,7 @@
  * the platform manifest tests); the poller handle and lmApi.testConnection
  * are spied so nothing leaves the machine.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { createRequire } from 'module';
 import request from 'supertest';
@@ -44,7 +45,7 @@ const THRESHOLD_KEYS = ['lm_if_util_warn_pct', 'lm_if_err_warn', 'lm_if_flap_war
 
 function wipe() {
   for (const t of TABLES) db.prepare(`DELETE FROM ${t}`).run();
-  db.prepare(`DELETE FROM app_settings WHERE key LIKE 'lm_%'`).run();
+  adminOf(db).prepare(`DELETE FROM app_settings WHERE key LIKE 'lm_%'`).run();
 }
 
 function ins(table, row) {
@@ -1061,7 +1062,7 @@ describe('logicmonitor round 3 routes', () => {
     expect(put.body.thresholds).toMatchObject({ lm_shadow_enabled: '0', lm_site_from_hostname: '0', lm_site_property: 'location', lm_circuit_sat_pct: 50, lm_wan_overrides: 'a:b' });
     expect((await request(app).put(`${API}/config`).send({ lm_shadow_enabled: 5 })).status).toBe(400);
     expect((await request(app).put(`${API}/config`).send({ lm_site_property: 12 })).status).toBe(400);
-    db.prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
+    adminOf(db).prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
   });
 
   it('PUT /sources/:id stores siteRule and publicSource returns it parsed', async () => {

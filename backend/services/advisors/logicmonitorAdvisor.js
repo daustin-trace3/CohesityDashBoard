@@ -375,8 +375,8 @@ function gatherCircuitCapacity() {
       status: c.statusText, p95InPct: c.p95InPct, p95OutPct: c.p95OutPct, highestDailyPeakPct: c.maxDailyPct, headroomPct: c.headroomPct,
       errors24h: c.errors24h, flaps24h: c.flaps24h, busiestHourUtc: c.busiestHour, daysAtCriticalPeak: c.critDays, state: c.state,
     })),
-    thresholds: { saturationP95Pct: db.prepare("SELECT value FROM app_settings WHERE key = 'lm_circuit_sat_pct'").get()?.value || '80',
-      criticalDailyPeakPct: db.prepare("SELECT value FROM app_settings WHERE key = 'lm_circuit_crit_pct'").get()?.value || '95' },
+    thresholds: { saturationP95Pct: getSetting('lm_circuit_sat_pct') || '80',
+      criticalDailyPeakPct: getSetting('lm_circuit_crit_pct') || '95' },
     openCircuitIssues: issueHistorySlice(['circuit-saturated'], 30 * DAY),
     note: noteIfEmpty(),
   };

@@ -1,3 +1,4 @@
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
@@ -792,7 +793,7 @@ describe('network evidence providers', () => {
 
 describe('webhook wake flag', () => {
   it('wake() writes the flag; wakeCheck() ticks once per new flag and not when the agent is off', () => {
-    db.prepare("DELETE FROM app_settings WHERE key = 'ops_agent_wake_requested'").run();
+    adminOf(db).prepare("DELETE FROM app_settings WHERE key = 'ops_agent_wake_requested'").run();
     expect(agent.wakeCheck()).toBe(false);          // no flag
     const at = agent.wake();
     expect(typeof at).toBe('string');

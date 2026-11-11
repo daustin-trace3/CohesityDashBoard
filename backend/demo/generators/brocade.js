@@ -12,6 +12,7 @@
 // the last hour on one source), and a failed poll on the DR source.
 // A few enclosure host_name values mirror the vcenter demo VM/host names
 // (aria suite VMs + nyc-esx-0101.icc.demo) for cross-platform Server 360 hits.
+const { adminOf } = require('../../db/adminSplit');
 const { randInt, randFloat, pick, chance, rngFor } = require('./core');
 
 function wwn(rng, prefix = '10:00:00:05:1e') {
@@ -76,7 +77,7 @@ function seedBrocade(db, { now, encrypt }) {
   const ago = (offset) => agoStmt.get(offset).d;
   const nowIso = new Date(now).toISOString();
 
-  const setDemoSetting = db.prepare(`
+  const setDemoSetting = adminOf(db).prepare(`
     INSERT INTO app_settings (key, value, updated_at) VALUES (?, '1', datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `);

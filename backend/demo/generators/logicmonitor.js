@@ -49,6 +49,7 @@
 // interfaces x 24 h plus 7 WAN circuits x 30 days and 6 ports x 8 days (about 146k
 // rows); check history at 5 min for 16 locations x 30 days plus the rest for
 // 2 days (about 172k rows).
+const { adminOf } = require('../../db/adminSplit');
 const crypto = require('crypto');
 const { rngFor, randInt, randFloat, pick, chance } = require('./core');
 
@@ -1076,7 +1077,7 @@ function seedLogicmonitor(db, { now, encrypt }) {
       writeGroup(gid, path, parentId, devices.filter((d) => d.groups.some((g) => ids.has(g))), 0);
     }
     // Services shown in the header row while on a LogicMonitor page.
-    db.prepare(`
+    adminOf(db).prepare(`
       INSERT INTO app_settings (key, value, updated_at) VALUES ('lm_service_groups', ?, datetime('now'))
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
     `).run(JSON.stringify(['Network/Core', 'Network/Branch', 'Network/Firewalls', 'Servers/Linux', 'Servers/Windows', 'Cloud/AWS']
@@ -1603,7 +1604,7 @@ function seedLogicmonitor(db, { now, encrypt }) {
   })();
 
   // Platform flag (unifi.js pattern).
-  db.prepare(`
+  adminOf(db).prepare(`
     INSERT INTO app_settings (key, value, updated_at) VALUES ('platform_logicmonitor_enabled', '1', datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `).run();

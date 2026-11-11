@@ -4,6 +4,7 @@
  * access rules (linked groups, pinned users, inactive, JIT) and username
  * clashes. No network is used.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { createRequire } from 'module';
 import request from 'supertest';
@@ -81,7 +82,7 @@ async function callback(agentOrApp, stateId, extra = '') {
 
 function linkGroup(name, externalName) {
   const now = new Date().toISOString();
-  return db.prepare("INSERT INTO groups (name, is_system, created_at, provider, idp_provider_id, external_name) VALUES (?, 0, ?, 'idp', ?, ?)")
+  return adminOf(db).prepare("INSERT INTO groups (name, is_system, created_at, provider, idp_provider_id, external_name) VALUES (?, 0, ?, 'idp', ?, ?)")
     .run(name, now, provider.id, externalName).lastInsertRowid;
 }
 
@@ -105,13 +106,13 @@ beforeEach(() => {
   userinfoClaims = null;
   tokenStatus = 200;
   signWith = null;
-  db.prepare('DELETE FROM user_groups').run();
-  db.prepare("DELETE FROM users WHERE idp_provider_id IS NOT NULL OR auth_provider IN ('oidc','saml')").run();
-  db.prepare("DELETE FROM users WHERE username IN ('carol', 'carol#okta-test')").run();
-  db.prepare("DELETE FROM groups WHERE provider = 'idp'").run();
-  db.prepare('DELETE FROM idp_auth_state').run();
-  db.prepare('DELETE FROM idp_providers').run();
-  db.prepare('DELETE FROM auth_sessions').run();
+  adminOf(db).prepare('DELETE FROM user_groups').run();
+  adminOf(db).prepare("DELETE FROM users WHERE idp_provider_id IS NOT NULL OR auth_provider IN ('oidc','saml')").run();
+  adminOf(db).prepare("DELETE FROM users WHERE username IN ('carol', 'carol#okta-test')").run();
+  adminOf(db).prepare("DELETE FROM groups WHERE provider = 'idp'").run();
+  adminOf(db).prepare('DELETE FROM idp_auth_state').run();
+  adminOf(db).prepare('DELETE FROM idp_providers').run();
+  adminOf(db).prepare('DELETE FROM auth_sessions').run();
   provider = providers.createProvider({ type: 'oidc', name: 'Okta Test', slug: SLUG, issuer: ISSUER, clientId: CLIENT_ID, clientSecret: 'the-secret' });
   providers.markTested(provider.id, true);
   provider = providers.updateProvider(provider.id, { enabled: true });
@@ -140,14 +141,14 @@ describe('start', () => {
     await start();
     expect(httpLog.filter((c) => c.url.endsWith('/.well-known/openid-configuration')).length).toBe(1);
     expect(providers.getProvider(provider.id).discovery_json).toContain('authorization_endpoint');
-    db.prepare("UPDATE idp_providers SET discovery_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(provider.id);
+    adminOf(db).prepare("UPDATE idp_providers SET discovery_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(provider.id);
     await start();
     expect(httpLog.filter((c) => c.url.endsWith('/.well-known/openid-configuration')).length).toBe(2);
   });
 
   it('answers 404 sso_provider for an unknown or disabled slug', async () => {
     expect((await request(app).get('/api/auth/sso/nope/start')).status).toBe(404);
-    db.prepare('UPDATE idp_providers SET enabled = 0 WHERE id = ?').run(provider.id);
+    adminOf(db).prepare('UPDATE idp_providers SET enabled = 0 WHERE id = ?').run(provider.id);
     const res = await request(app).get(`/api/auth/sso/${SLUG}/start`);
     expect(res.status).toBe(404);
     expect(res.body.error).toBe('sso_provider');
@@ -166,7 +167,7 @@ describe('start', () => {
 describe('callback', () => {
   it('signs a user in, creates the account and sets the memberships', async () => {
     const gid = linkGroup('Okta ICC Admins', 'ICC Admins');
-    db.prepare("INSERT INTO role_grants (subject_type, subject_id, permission, created_at) VALUES ('group', ?, 'cohesity:*:view', ?)").run(gid, new Date().toISOString());
+    adminOf(db).prepare("INSERT INTO role_grants (subject_type, subject_id, permission, created_at) VALUES ('group', ?, 'cohesity:*:view', ?)").run(gid, new Date().toISOString());
     const agent = request.agent(app);
     const { stateId } = await start('/cohesity/clusters');
     const res = await callback(agent, stateId);
@@ -235,7 +236,7 @@ describe('callback', () => {
     expect((await callback(null, 'f'.repeat(64))).headers.location).toBe('/login?error=sso_state');
 
     let s = await start();
-    db.prepare("UPDATE idp_auth_state SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(s.stateId);
+    adminOf(db).prepare("UPDATE idp_auth_state SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(s.stateId);
     expect((await callback(null, s.stateId)).headers.location).toBe('/login?error=sso_state');
 
     s = await start();
@@ -294,7 +295,7 @@ describe('callback', () => {
 
   it('a username that belongs to a local account becomes <name>#<slug>', async () => {
     const now = new Date().toISOString();
-    db.prepare("INSERT INTO users (username, password_hash, display_name, auth_provider, created_at, updated_at) VALUES ('carol', 'localhash', 'Local Carol', 'local', ?, ?)").run(now, now);
+    adminOf(db).prepare("INSERT INTO users (username, password_hash, display_name, auth_provider, created_at, updated_at) VALUES ('carol', 'localhash', 'Local Carol', 'local', ?, ?)").run(now, now);
     linkGroup('Okta ICC Admins', 'ICC Admins');
     const s = await start();
     expect((await callback(null, s.stateId)).headers.location).toBe('/');
@@ -307,14 +308,14 @@ describe('callback', () => {
     linkGroup('Okta ICC Admins', 'ICC Admins');
     let s = await start();
     expect((await callback(null, s.stateId)).headers.location).toBe('/');
-    db.prepare("UPDATE users SET is_active = 0 WHERE username = 'carol'").run();
+    adminOf(db).prepare("UPDATE users SET is_active = 0 WHERE username = 'carol'").run();
     s = await start();
     expect((await callback(null, s.stateId)).headers.location).toBe('/login?error=sso_inactive');
   });
 
   it('JIT off and no existing user -> sso_jit_disabled', async () => {
     linkGroup('Okta ICC Admins', 'ICC Admins');
-    db.prepare('UPDATE idp_providers SET jit_enabled = 0 WHERE id = ?').run(provider.id);
+    adminOf(db).prepare('UPDATE idp_providers SET jit_enabled = 0 WHERE id = ?').run(provider.id);
     const s = await start();
     expect((await callback(null, s.stateId)).headers.location).toBe('/login?error=sso_jit_disabled');
     expect(db.prepare("SELECT COUNT(*) c FROM users WHERE username = 'carol'").get().c).toBe(0);
@@ -351,7 +352,7 @@ describe('mapIdentity and testProvider', () => {
     const ok = await oidc.testProvider(providers.getProvider(provider.id));
     expect(ok.ok).toBe(true);
     expect(ok.checks.map((c) => c.name)).toEqual(['Client ID', 'Client secret', 'Discovery', 'Signing keys']);
-    db.prepare('UPDATE idp_providers SET client_secret = NULL WHERE id = ?').run(provider.id);
+    adminOf(db).prepare('UPDATE idp_providers SET client_secret = NULL WHERE id = ?').run(provider.id);
     const bad = await oidc.testProvider(providers.getProvider(provider.id));
     expect(bad.ok).toBe(false);
     expect(bad.checks.find((c) => c.name === 'Client secret').ok).toBe(false);

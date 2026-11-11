@@ -1,3 +1,4 @@
+const { adminOf } = require('../../db/adminSplit');
 // Deterministic PRNG utilities shared by every demo generator, plus core-scope
 // seeding (app_settings, admin user + Admin group membership).
 
@@ -45,7 +46,7 @@ function chance(rng, probability) {
 }
 
 async function seedCore(db, { argon2, now }) {
-  const setSetting = db.prepare(`
+  const setSetting = adminOf(db).prepare(`
     INSERT INTO app_settings (key, value, updated_at)
     VALUES (?, ?, datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
@@ -75,14 +76,15 @@ async function seedCore(db, { argon2, now }) {
   const nowIso = new Date(now).toISOString();
   const passwordHash = await argon2.hash('IccDemo2026!', { type: argon2.argon2id });
 
-  db.prepare(`
+  const adminHandle = adminOf(db);
+  adminHandle.prepare(`
     INSERT INTO users (username, password_hash, display_name, auth_provider, is_active, created_at, updated_at)
     VALUES ('demo', ?, 'Demo Admin', 'local', 1, ?, ?)
   `).run(passwordHash, nowIso, nowIso);
 
-  const userId = db.prepare("SELECT id FROM users WHERE username = 'demo'").get().id;
-  const adminGroupId = db.prepare("SELECT id FROM groups WHERE name = 'Admin'").get().id;
-  db.prepare('INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)').run(userId, adminGroupId);
+  const userId = adminHandle.prepare("SELECT id FROM users WHERE username = 'demo'").get().id;
+  const adminGroupId = adminHandle.prepare("SELECT id FROM groups WHERE name = 'Admin'").get().id;
+  adminHandle.prepare('INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)').run(userId, adminGroupId);
 
   return { userCount: 1 };
 }

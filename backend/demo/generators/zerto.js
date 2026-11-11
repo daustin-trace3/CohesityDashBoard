@@ -3,6 +3,7 @@
 // breaches so the Overview breach counters are non-zero), member VMs, active
 // alerts, and 30 days of account snapshots for the trends chart. The SaaS
 // credential is seeded encrypted so the platform reports "configured".
+const { adminOf } = require('../../db/adminSplit');
 const { randInt, randFloat, pick, chance, rngFor } = require('./core');
 
 // Protected site → recovery site, matching the C11.2 site scheme.
@@ -23,7 +24,7 @@ function seedZerto(db, { now, encrypt }) {
   const nowIso = new Date(now).toISOString();
 
   // ── Credential + platform flag (page renders "configured") ──────────────
-  const setSetting = db.prepare(`
+  const setSetting = adminOf(db).prepare(`
     INSERT INTO app_settings (key, value, updated_at)
     VALUES (?, ?, datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at

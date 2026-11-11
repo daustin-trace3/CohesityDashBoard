@@ -3,7 +3,7 @@
 // (or checks) a session in the first place.
 const express = require('express');
 const rateLimit = require('express-rate-limit');
-const db = require('../db/database');
+const db = require('../db/adminDb');
 const directory = require('../services/directory');
 const directorySync = require('../services/directorySync');
 const idpProviders = require('../services/idpProviders');

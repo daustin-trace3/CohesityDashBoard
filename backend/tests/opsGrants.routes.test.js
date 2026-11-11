@@ -1,3 +1,4 @@
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 // Ops grants: the Ops Agent routes need ops:*:view to read and ops:*:manage to
 // act, and a caller sees only incidents whose platforms it holds.
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
@@ -15,7 +16,7 @@ const NOW = new Date().toISOString();
 function keyFor(name, grants) {
   const key = `icc_${crypto.randomBytes(20).toString('hex')}`;
   const keyHash = crypto.createHash('sha256').update(key).digest('hex');
-  db.prepare('INSERT INTO service_accounts (name, key_hash, key_prefix, permissions, is_active, created_at) VALUES (?, ?, ?, ?, 1, ?)')
+  adminOf(db).prepare('INSERT INTO service_accounts (name, key_hash, key_prefix, permissions, is_active, created_at) VALUES (?, ?, ?, ?, 1, ?)')
     .run(name, keyHash, key.slice(0, 8), JSON.stringify(grants), NOW);
   return key;
 }

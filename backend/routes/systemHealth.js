@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 const express = require('express');
 const db = require('../db/database');
+const { adminOf } = require('../db/adminSplit');
 const registry = require('../core/registry');
 const pollerStatusRoute = require('./poller');
 const requestStats = require('../services/requestStats');
@@ -59,9 +60,19 @@ function webProcess() {
   };
 }
 
+function fileSummary(role, handle, file) {
+  let pageCount = null;
+  let freelist = null;
+  try { pageCount = handle.pragma('page_count', { simple: true }); freelist = handle.pragma('freelist_count', { simple: true }); } catch { /* keep null */ }
+  return { role, path: file, fileBytes: systemHealth.fileBytes(file), walBytes: systemHealth.fileBytes(`${file}-wal`), pageCount, freelist };
+}
+
 function databaseBlock() {
   const file = db.name;
   const fileBytes = systemHealth.fileBytes(file);
+  const files = [fileSummary('data', db, file)];
+  const adminFile = systemHealth.adminFileOf(db);
+  if (adminFile) files.push(fileSummary('admin', adminOf(db), adminFile));
   let snapshot = systemHealth.readSnapshot();
   // A fresh install or the demo has no poller sweep result yet; a small file is
   // cheap enough to measure here so the page is never empty there.
@@ -69,7 +80,7 @@ function databaseBlock() {
     try { snapshot = systemHealth.dbSnapshot(db, file); systemHealth.storeSnapshot(snapshot); } catch { snapshot = null; }
   }
   return {
-    path: file, fileBytes, walBytes: systemHealth.fileBytes(`${file}-wal`),
+    path: file, fileBytes, walBytes: systemHealth.fileBytes(`${file}-wal`), files,
     lastCheckpoint: parseJson(getSetting('icc_wal_checkpoint_last')),
     snapshot,
     snapshotAgeSeconds: snapshot ? Math.max(0, Math.round((Date.now() - Date.parse(snapshot.at)) / 1000)) : null,
@@ -211,9 +222,15 @@ function buildFindings(p) {
       text: poller ? `The poller process has not reported for ${Math.round(poller.ageSeconds / 60)} min (last pid ${poller.pid}). Nothing is polling.` : 'No poller heartbeat on record. The poller process is not running, or predates the heartbeat.',
     });
   }
-  const walBytes = p.database.walBytes;
-  if (walBytes > WAL_WARN_BYTES) {
-    out.push({ id: 'wal-large', severity: 'warn', tab: 'database', text: `The write-ahead log is ${Math.round(walBytes / 1048576)} MB. Checkpoints may not be finishing.` });
+  // Per file: the data file and the admin file each have their own log and size.
+  const dbFiles = (p.database.files && p.database.files.length)
+    ? p.database.files
+    : [{ role: 'data', fileBytes: p.database.fileBytes, walBytes: p.database.walBytes }];
+  const many = dbFiles.length > 1;
+  for (const f of dbFiles) {
+    if (f.walBytes > WAL_WARN_BYTES) {
+      out.push({ id: 'wal-large', severity: 'warn', tab: 'database', text: `The write-ahead log${many ? ` of the ${f.role} file` : ''} is ${Math.round(f.walBytes / 1048576)} MB. Checkpoints may not be finishing.` });
+    }
   }
   if (poller && poller.mem && poller.mem.rssMb > 1024) {
     out.push({ id: 'poller-memory', severity: 'warn', tab: 'overview', text: `The poller process is using ${poller.mem.rssMb} MB of memory.` });
@@ -238,8 +255,10 @@ function buildFindings(p) {
   if (p.database.snapshotAgeSeconds != null && p.database.snapshotAgeSeconds > 3600) {
     out.push({ id: 'snapshot-stale', severity: 'info', tab: 'database', text: `The table size snapshot is ${Math.round(p.database.snapshotAgeSeconds / 3600)} h old.` });
   }
-  if (p.database.fileBytes > DB_LARGE_BYTES) {
-    out.push({ id: 'db-large', severity: 'info', tab: 'database', text: `The database file is ${(p.database.fileBytes / 1073741824).toFixed(1)} GB. Consider the retention windows.` });
+  for (const f of dbFiles) {
+    if (f.fileBytes > DB_LARGE_BYTES) {
+      out.push({ id: 'db-large', severity: 'info', tab: 'database', text: `The database ${many ? `${f.role} ` : ''}file is ${(f.fileBytes / 1073741824).toFixed(1)} GB. Consider the retention windows.` });
+    }
   }
   return out;
 }

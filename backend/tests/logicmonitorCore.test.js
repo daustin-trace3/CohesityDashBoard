@@ -7,6 +7,7 @@
  * numbers, the topology description parser and the issue rules. Rows are
  * seeded straight into the per-file test DB through the migration.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { createRequire } from 'module';
 
@@ -1019,7 +1020,7 @@ const sqlStamp = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 1
  */
 function seedPathEstate() {
   wipe();
-  db.prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
+  adminOf(db).prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
   const sid = insertSource();
   const vcId = ensureVcenterFixtures();
   const grp = db.prepare('INSERT INTO lm_device_groups (source_id, lm_group_id, name, full_path, stale) VALUES (?, ?, ?, ?, 0)');
@@ -1243,7 +1244,7 @@ describe('round 3: dependency suppression (C3)', () => {
 });
 
 describe('round 3: circuits (C4)', () => {
-  afterEach(() => { clearVcenterFixtures(); db.prepare("DELETE FROM app_settings WHERE key = 'lm_wan_overrides'").run(); });
+  afterEach(() => { clearVcenterFixtures(); adminOf(db).prepare("DELETE FROM app_settings WHERE key = 'lm_wan_overrides'").run(); });
 
   it('marks WAN interfaces by description, unresolved uplink and overrides', () => {
     const sid = seedPathEstate();
@@ -1319,7 +1320,7 @@ describe('round 3: interface baselines and anomalies (C5)', () => {
     expect(issues.some((i) => i.type === 'interface-utilization-high')).toBe(false); // 60% is under the static 80%
     setSetting('lm_if_anomaly_util_min_pct', '90');
     expect(lmIssues.computeIssues().some((i) => i.type === 'interface-util-anomaly')).toBe(false);
-    db.prepare("DELETE FROM app_settings WHERE key = 'lm_if_anomaly_util_min_pct'").run();
+    adminOf(db).prepare("DELETE FROM app_settings WHERE key = 'lm_if_anomaly_util_min_pct'").run();
   });
 
   it('backup windows join a Cohesity run to the host port and compare with the run mean', () => {

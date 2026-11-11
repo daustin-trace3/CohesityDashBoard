@@ -13,6 +13,7 @@
 // vrops-nyc-01, vrli-nyc-01, vrlcm-nyc-01, vrni-nyc-01 match VM names in
 // backend/demo/generators/vcenter.js (and the unifi wired-client names) so
 // Server 360 correlates across platforms.
+const { adminOf } = require('../../db/adminSplit');
 const { randInt, pick, chance, rngFor } = require('./core');
 
 const SOURCE_NAME = 'BAM-DEMO';
@@ -171,7 +172,7 @@ function seedBluecat(db, { now, encrypt }) {
   const ago = (offset) => agoStmt.get(offset).d;
   const nowIso = new Date(now).toISOString();
 
-  const setDemoSetting = db.prepare(`
+  const setDemoSetting = adminOf(db).prepare(`
     INSERT INTO app_settings (key, value, updated_at) VALUES (?, '1', datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `);

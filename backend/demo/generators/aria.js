@@ -4,6 +4,7 @@
 // panel demos every rule: unhealthy endpoints, failed deployments, leases
 // expiring/expired, an expiring TLS cert, catalog import errors, failed
 // runs, and pending approvals.
+const { adminOf } = require('../../db/adminSplit');
 const { randInt, randFloat, pick, chance, rngFor } = require('./core');
 
 const PROJECT_NAMES = ['Platform Eng', 'Data Science', 'QA Sandbox', 'Customer Portal', 'Internal Tools', 'Networking'];
@@ -57,7 +58,7 @@ const FLAVOR_MAPPINGS = [
 ];
 
 function seedAria(db, { now, encrypt }) {
-  db.prepare(`
+  adminOf(db).prepare(`
     INSERT INTO app_settings (key, value, updated_at) VALUES ('platform_aria_enabled', '1', datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `).run();

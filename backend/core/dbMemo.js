@@ -16,7 +16,14 @@ function stateToken(db) {
     dv = row ? Object.values(row)[0] : '';
   }
   const tc = db.prepare('SELECT total_changes() AS n').get().n;
-  return `${dv}|${tc}`;
+  // The admin file (db/adminSplit.js) is attached as "admin": settings and
+  // other admin rows change through another connection, which moves only the
+  // attached file's data_version.
+  let av = '';
+  if (typeof db.pragma === 'function') {
+    try { av = db.pragma('admin.data_version', { simple: true }); } catch { /* no admin file attached */ }
+  }
+  return `${dv}|${tc}|${av}`;
 }
 
 function memoByDbState(db, key, fn) {

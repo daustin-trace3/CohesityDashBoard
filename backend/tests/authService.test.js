@@ -8,6 +8,7 @@
  * its own process per vitest.config.mjs, so authService's module-level
  * claim-token state is fresh here).
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll } from 'vitest';
 import db from '../db/database.js';
 import {
@@ -22,7 +23,7 @@ import {
 
 function insertUser(username) {
   const now = new Date().toISOString();
-  const info = db
+  const info = adminOf(db)
     .prepare(`
       INSERT INTO users (username, password_hash, display_name, created_at, updated_at)
       VALUES (?, 'placeholder-hash', ?, ?, ?)
@@ -96,7 +97,7 @@ describe('session lifecycle', () => {
   it('expired sessions are lazily deleted and validate to null', () => {
     const session = createSession(userId);
     const past = new Date(Date.now() - 60 * 1000).toISOString(); // 1 minute ago
-    db.prepare('UPDATE auth_sessions SET expires_at = ? WHERE id = ?').run(past, session.id);
+    adminOf(db).prepare('UPDATE auth_sessions SET expires_at = ? WHERE id = ?').run(past, session.id);
 
     expect(validateSession(session.id)).toBeNull();
     expect(db.prepare('SELECT 1 FROM auth_sessions WHERE id = ?').get(session.id)).toBeUndefined();
@@ -116,7 +117,7 @@ describe('session lifecycle', () => {
     const session = createSession(userId);
     // 5 days left — inside the <6d refresh window.
     const nearExpiry = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString();
-    db.prepare('UPDATE auth_sessions SET expires_at = ? WHERE id = ?').run(nearExpiry, session.id);
+    adminOf(db).prepare('UPDATE auth_sessions SET expires_at = ? WHERE id = ?').run(nearExpiry, session.id);
 
     const before = db.prepare('SELECT expires_at FROM auth_sessions WHERE id = ?').get(session.id);
     expect(before.expires_at).toBe(nearExpiry);
@@ -133,7 +134,7 @@ describe('session lifecycle', () => {
     const session = createSession(userId);
     // ~6.5 days left — outside the <6d refresh window.
     const farExpiry = new Date(Date.now() + 6.5 * 24 * 60 * 60 * 1000).toISOString();
-    db.prepare('UPDATE auth_sessions SET expires_at = ? WHERE id = ?').run(farExpiry, session.id);
+    adminOf(db).prepare('UPDATE auth_sessions SET expires_at = ? WHERE id = ?').run(farExpiry, session.id);
 
     expect(validateSession(session.id)).not.toBeNull();
 
@@ -144,7 +145,7 @@ describe('session lifecycle', () => {
   it('validateSession returns null and deletes the session if the user was deactivated', () => {
     const otherUserId = insertUser('to-be-deactivated');
     const session = createSession(otherUserId);
-    db.prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(otherUserId);
+    adminOf(db).prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(otherUserId);
 
     expect(validateSession(session.id)).toBeNull();
     expect(db.prepare('SELECT 1 FROM auth_sessions WHERE id = ?').get(session.id)).toBeUndefined();
@@ -154,7 +155,7 @@ describe('session lifecycle', () => {
     const live = createSession(userId);
     const dead = createSession(userId);
     const past = new Date(Date.now() - 60 * 1000).toISOString();
-    db.prepare('UPDATE auth_sessions SET expires_at = ? WHERE id = ?').run(past, dead.id);
+    adminOf(db).prepare('UPDATE auth_sessions SET expires_at = ? WHERE id = ?').run(past, dead.id);
 
     pruneExpired();
 

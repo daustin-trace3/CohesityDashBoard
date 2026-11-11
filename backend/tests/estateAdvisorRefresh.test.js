@@ -3,6 +3,7 @@
  * (lifecycle_support, capacity_outlook, ops_agent_review), the ISO-cutoff fix for the 24 hour counts, list caps,
  * and the anonymizer scrubbing every seeded name out of the gathers.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { createRequire } from 'module';
 
@@ -49,7 +50,8 @@ const CLEAR = [
 
 const ins = (table, row) => {
   const cols = Object.keys(row);
-  return db.prepare(`INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`).run(...cols.map((c) => row[c])).lastInsertRowid;
+  const target = /^(idp_|directory_|users$|groups$|user_groups$|role_grants$)/.test(table) ? adminOf(db) : db;
+  return target.prepare(`INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`).run(...cols.map((c) => row[c])).lastInsertRowid;
 };
 const insHv = (table, row) => (HAS_HYPERV ? ins(table, row) : null);
 const ago = (ms) => new Date(Date.now() - ms).toISOString();
@@ -57,11 +59,12 @@ const sqlAgo = (ms) => ago(ms).replace('T', ' ').slice(0, 19);
 const DAY = 86400000;
 
 beforeAll(() => {
-  for (const s of SCOPES) runMigrations(db, s, require(`../db/migrations/${s}`));
+  // The directory scope lives in the admin file (db/adminSplit.js).
+  for (const s of SCOPES) runMigrations(s === 'directory' ? adminOf(db) : db, s, require(`../db/migrations/${s}`));
 });
 
 beforeEach(() => {
-  for (const t of CLEAR) { try { db.exec(`DELETE FROM ${t}`); } catch { /* table absent on this build */ } }
+  for (const t of CLEAR) { try { (/^(idp_|directory_|users$|groups$)/.test(t) ? adminOf(db) : db).exec(`DELETE FROM ${t}`); } catch { /* table absent on this build */ } }
 });
 
 describe('estate advisor refresh', () => {
@@ -157,8 +160,8 @@ describe('estate advisor refresh', () => {
   it('access_review lists identity providers, sign-in sources and directory sync', () => {
     const now = new Date().toISOString();
     const pid = ins('idp_providers', { name: 'okta-secret', slug: 'okta', type: 'oidc', enabled: 1, mgmt_kind: 'okta', created_at: now, updated_at: now });
-    db.prepare('INSERT INTO idp_sync_log (provider_id, started_at, trigger, status, groups_synced, users_seen) VALUES (?, ?, ?, ?, ?, ?)').run(pid, now, 'schedule', 'ok', 4, 20);
-    db.prepare('INSERT INTO directory_sync_log (started_at, trigger, status, groups_synced, users_seen) VALUES (?, ?, ?, ?, ?)').run(now, 'manual', 'ok', 3, 11);
+    adminOf(db).prepare('INSERT INTO idp_sync_log (provider_id, started_at, trigger, status, groups_synced, users_seen) VALUES (?, ?, ?, ?, ?, ?)').run(pid, now, 'schedule', 'ok', 4, 20);
+    adminOf(db).prepare('INSERT INTO directory_sync_log (started_at, trigger, status, groups_synced, users_seen) VALUES (?, ?, ?, ?, ?)').run(now, 'manual', 'ok', 3, 11);
     const out = estate.gatherFor('access_review');
     expect(out.idpProviders).toMatchObject([{ name: 'okta-secret', protocol: 'oidc', enabled: true, oktaSync: true, lastSyncCounts: { groups: 4, users: 20 } }]);
     expect(out.directorySync).toMatchObject([{ status: 'ok', groups: 3, users: 11 }]);

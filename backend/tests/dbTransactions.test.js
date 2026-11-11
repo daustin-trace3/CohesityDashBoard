@@ -106,3 +106,73 @@ describe('installTransactionShim', () => {
     expect(calls).toBe(1);
   });
 });
+
+describe('anchor mode (data file with the admin file attached)', () => {
+  let adminFile; let admin2;
+  beforeEach(() => {
+    adminFile = path.join(dir, 't.admin.db');
+    const seed = new Database(adminFile);
+    seed.pragma('journal_mode = WAL');
+    seed.exec('CREATE TABLE a (id INTEGER PRIMARY KEY, v TEXT)');
+    seed.close();
+    A.exec("ATTACH DATABASE '" + adminFile.replace(/\\/g, '/') + "' AS admin");
+    A.exec('CREATE TABLE icc_txn_anchor (n INTEGER NOT NULL)');
+    A.exec('INSERT INTO icc_txn_anchor (n) VALUES (0)');
+    admin2 = new Database(adminFile);
+    admin2.pragma('busy_timeout = 300');
+    B.pragma('busy_timeout = 300');
+  });
+  afterEach(() => { try { admin2.close(); } catch { /* closed */ } });
+
+  const tryWrite = (conn, sql) => { try { conn.prepare(sql).run(); return null; } catch (e) { return e.code; } };
+
+  it('a default transaction holds the data write lock but leaves the admin file writable', () => {
+    installTransactionShim(A, { logger: mkLogger(), anchor: true });
+    let dataCode; let adminCode;
+    A.transaction(() => {
+      dataCode = tryWrite(B, "INSERT INTO t (v) VALUES ('x')");
+      adminCode = tryWrite(admin2, "INSERT INTO a (v) VALUES ('x')");
+    })();
+    expect(dataCode).toBe('SQLITE_BUSY');
+    expect(adminCode).toBeNull();
+  });
+
+  it('immediate and default modes behave the same way', () => {
+    installTransactionShim(A, { logger: mkLogger(), anchor: true });
+    for (const mode of ['immediate', 'default']) {
+      let dataCode; let adminCode;
+      const txn = A.transaction(() => {
+        dataCode = tryWrite(B, "INSERT INTO t (v) VALUES ('x')");
+        adminCode = tryWrite(admin2, "INSERT INTO a (v) VALUES ('y')");
+      });
+      txn[mode]();
+      expect(dataCode).toBe('SQLITE_BUSY');
+      expect(adminCode).toBeNull();
+    }
+  });
+
+  it('a nested runner does not touch the anchor again', () => {
+    installTransactionShim(A, { logger: mkLogger(), anchor: true });
+    const inner = A.transaction(() => { A.prepare('INSERT INTO t (v) VALUES (?)').run('inner'); });
+    A.transaction(() => { inner(); inner.immediate(); })();
+    expect(A.prepare('SELECT n FROM icc_txn_anchor').get().n).toBe(1);
+    expect(A.prepare('SELECT count(*) AS c FROM t').get().c).toBe(2);
+  });
+
+  it('the plain shim on a connection with an attachment blocks the admin file (why anchor mode exists)', () => {
+    installTransactionShim(A, { logger: mkLogger() });
+    let adminCode;
+    A.transaction(() => { adminCode = tryWrite(admin2, "INSERT INTO a (v) VALUES ('x')"); })();
+    expect(adminCode).toBe('SQLITE_BUSY');
+  });
+
+  it('an anchored body that writes an admin table commits to both files', () => {
+    installTransactionShim(A, { logger: mkLogger(), anchor: true });
+    A.transaction(() => {
+      A.prepare("INSERT INTO t (v) VALUES ('d')").run();
+      A.prepare("INSERT INTO admin.a (v) VALUES ('a')").run();
+    })();
+    expect(A.prepare('SELECT count(*) AS c FROM t').get().c).toBe(1);
+    expect(admin2.prepare('SELECT count(*) AS c FROM a').get().c).toBe(1);
+  });
+});

@@ -8,7 +8,7 @@
 // one user right after a successful domain bind. Both take the write lock up
 // front (BEGIN IMMEDIATE, see icc-sqlite-write-transactions).
 
-const db = require('../db/database');
+const db = require('../db/adminDb');
 const directory = require('./directory');
 const { isDemo } = require('./demoMode');
 const logger = require('../utils/logger');

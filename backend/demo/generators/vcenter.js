@@ -4,6 +4,7 @@
 // per-vCenter snapshots. Includes deliberate trouble so the Overview issues
 // panel demos every rule: an unreachable vCenter, a down host, a host in
 // maintenance, datastores past 80%/90%, a tight cluster, an expiring cert.
+const { adminOf } = require('../../db/adminSplit');
 const { randInt, randFloat, pick, chance, rngFor } = require('./core');
 
 const SITES = ['nyc', 'lon', 'fra', 'sgp', 'syd', 'chi', 'dal', 'tor'];
@@ -80,7 +81,7 @@ const USAGE_IDS = [
 function seedVcenter(db, { now, encrypt }) {
   const nowIso = new Date(now).toISOString();
 
-  db.prepare(`
+  adminOf(db).prepare(`
     INSERT INTO app_settings (key, value, updated_at) VALUES ('platform_vcenter_enabled', '1', datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `).run();

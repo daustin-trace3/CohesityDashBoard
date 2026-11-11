@@ -113,7 +113,8 @@ function validateDerived(manifest) {
 }
 
 function upsertPluginRow(entry) {
-  const db = coreApiRef && coreApiRef.db;
+  // plugins lives in the admin file (db/adminSplit.js).
+  const db = coreApiRef && (coreApiRef.adminDb || coreApiRef.db);
   if (!db) return;
   const now = new Date().toISOString();
   db.prepare(`

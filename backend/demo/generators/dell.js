@@ -4,6 +4,7 @@
 // runway (some expiring/expired), firmware baseline drift, Power Manager
 // metrics on one site only (the other shows the "plugin not installed"
 // experience), and 30 days of metrics history.
+const { adminOf } = require('../../db/adminSplit');
 const { randInt, randFloat, pick, chance, rngFor } = require('./core');
 const { fingerprint } = require('../../services/dellVariance');
 
@@ -74,7 +75,7 @@ const JOB_TEMPLATES = [
 ];
 
 function seedDell(db, { now, encrypt }) {
-  db.prepare(`
+  adminOf(db).prepare(`
     INSERT INTO app_settings (key, value, updated_at) VALUES ('platform_dell_enabled', '1', datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `).run();

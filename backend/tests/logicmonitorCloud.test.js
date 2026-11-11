@@ -4,6 +4,7 @@
  * issue types and the circuits rows. Datapoint names and enums are UNVERIFIED
  * in the code, so the tests pin the documented tolerance, not a live shape.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { createRequire } from 'module';
 
@@ -25,7 +26,7 @@ beforeAll(() => { runMigrations(db, 'logicmonitor', lmMigrations); });
 let sid;
 beforeEach(() => {
   for (const t of TABLES) db.prepare(`DELETE FROM ${t}`).run();
-  db.prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
+  adminOf(db).prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
   sid = db.prepare('INSERT INTO lm_sources (name, company, auth_mode, encrypted_credentials) VALUES (?, ?, ?, ?)')
     .run('Acme', 'acme', 'lmv1', encrypt(JSON.stringify({ accessId: 'a', accessKey: 'b' }))).lastInsertRowid;
 });

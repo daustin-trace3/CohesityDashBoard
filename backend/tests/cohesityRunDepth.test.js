@@ -2,6 +2,7 @@
  * Cohesity run history depth: backfill window when the depth was raised, the
  * per-cluster marker, and the prune of rows older than the depth.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { createRequire } from 'module';
 
@@ -29,7 +30,7 @@ beforeAll(() => {
 beforeEach(() => {
   db.prepare('DELETE FROM replication_runs').run();
   db.prepare('DELETE FROM protection_runs').run();
-  db.prepare("DELETE FROM app_settings WHERE key LIKE 'cohesity_runs_backfilled_days_%'").run();
+  adminOf(db).prepare("DELETE FROM app_settings WHERE key LIKE 'cohesity_runs_backfilled_days_%'").run();
   setSetting('cohesity_run_history_days', '90');
 });
 

@@ -167,11 +167,46 @@ const SNAPSHOT_SRC = `function dbSnapshot(db, dbPath, fs) {
 // eslint-disable-next-line no-eval
 const snapshotImpl = (0, eval)(`(${SNAPSHOT_SRC})`);
 
+/** Path of the attached admin file (db/adminSplit.js), or null on a single-file handle. */
+function adminFileOf(db) {
+  try {
+    const row = db.pragma('database_list').find((d) => d.name === 'admin');
+    return row && row.file ? row.file : null;
+  } catch { return null; }
+}
+
+function fileRow(role, s) {
+  return { role, path: s.path, fileBytes: s.fileBytes, walBytes: s.walBytes, pageCount: s.pageCount, freelist: s.freelistPages };
+}
+
+/** One snapshot over both files: legacy top-level fields describe the data file,
+ *  files[] lists both, every table row carries the file it lives in. */
+function mergeSnapshots(data, admin) {
+  const tag = (s, file) => s.tables.map((t) => ({ ...t, file }));
+  const out = { ...data, tables: tag(data, 'data'), files: [fileRow('data', data)] };
+  if (admin) {
+    out.files.push(fileRow('admin', admin));
+    out.tables = out.tables.concat(tag(admin, 'admin'))
+      .sort((a, b) => (b.bytes + b.indexBytes) - (a.bytes + a.indexBytes) || a.name.localeCompare(b.name));
+    out.totals = {
+      tables: data.totals.tables + admin.totals.tables, rows: data.totals.rows + admin.totals.rows,
+      bytes: data.totals.bytes + admin.totals.bytes, indexBytes: data.totals.indexBytes + admin.totals.indexBytes,
+    };
+    out.computeMs = data.computeMs + admin.computeMs;
+  }
+  return out;
+}
+
 /** Main-thread snapshot (tests, and the inline path for small files). */
 function dbSnapshot(db, dbPath) {
-  const snap = snapshotImpl(db, dbPath, fs);
-  if (snap.dbstatError) logger.debug(`[health] dbstat unavailable: ${snap.dbstatError}`);
-  return snap;
+  const data = snapshotImpl(db, dbPath, fs);
+  if (data.dbstatError) logger.debug(`[health] dbstat unavailable: ${data.dbstatError}`);
+  const adminFile = adminFileOf(db);
+  let admin = null;
+  if (adminFile && db.adminHandle) {
+    try { admin = snapshotImpl(db.adminHandle, adminFile, fs); } catch (err) { logger.debug(`[health] admin snapshot failed: ${err.message}`); }
+  }
+  return mergeSnapshots(data, admin);
 }
 
 const WORKER_SRC = `
@@ -205,9 +240,9 @@ function snapshotInWorker(dbPath) {
   });
 }
 
-/** Snapshot one database: worker thread for a real file, inline for an in-memory one. */
-async function snapshotDb(db, file) {
-  if (!file || file === ':memory:' || !fs.existsSync(file)) return dbSnapshot(db, file);
+/** Snapshot one file: worker thread for a real file, inline for an in-memory one. */
+async function snapshotFile(handle, file) {
+  if (!file || file === ':memory:' || !fs.existsSync(file)) return snapshotImpl(handle, file, fs);
   try {
     const snap = await snapshotInWorker(file);
     if (snap.dbstatError) logger.debug(`[health] dbstat unavailable: ${snap.dbstatError}`);
@@ -215,10 +250,21 @@ async function snapshotDb(db, file) {
   } catch (err) {
     if (fileBytes(file) < INLINE_MAX_BYTES) {
       logger.debug(`[health] snapshot worker failed (${err.message}); computing inline`);
-      return dbSnapshot(db, file);
+      return snapshotImpl(handle, file, fs);
     }
     throw err;
   }
+}
+
+/** Snapshot the data file and, when one is attached, the admin file. */
+async function snapshotDb(db, file) {
+  const data = await snapshotFile(db, file);
+  const adminFile = adminFileOf(db);
+  let admin = null;
+  if (adminFile) {
+    try { admin = await snapshotFile(db.adminHandle || db, adminFile); } catch (err) { logger.debug(`[health] admin snapshot failed: ${err.message}`); }
+  }
+  return mergeSnapshots(data, admin);
 }
 
 function readSnapshot() {
@@ -312,7 +358,7 @@ function stopSweep() {
 
 module.exports = {
   recordPollRun, pruneRuns, processSample, memSample, logSummary, dbCounters, pollingStats,
-  readLoopLagP99Ms, webLoopLagP99Ms, dbSnapshot, readSnapshot, storeSnapshot, fileBytes,
+  readLoopLagP99Ms, webLoopLagP99Ms, dbSnapshot, adminFileOf, readSnapshot, storeSnapshot, fileBytes,
   startSweep, stopSweep, sweepTick,
   SNAPSHOT_KEY, REFRESH_KEY, INLINE_MAX_BYTES,
 };

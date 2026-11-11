@@ -3,6 +3,8 @@
 // never finish and the -wal file grows without bound (631 MB beside a 965 MB
 // database on 2026-10-19). A PASSIVE checkpoint every few minutes drains what
 // it can; when the log is still large a TRUNCATE resets it.
+// PRAGMA wal_checkpoint without a schema name checkpoints every attached
+// database, so the admin file's log (db/adminSplit.js) is covered by this task.
 const fs = require('fs');
 const logger = require('../utils/logger');
 const { setSetting } = require('./settings');

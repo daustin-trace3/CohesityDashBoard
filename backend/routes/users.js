@@ -3,7 +3,7 @@
 // mutating verbs) — no per-route permission checks needed here.
 const express = require('express');
 const crypto = require('crypto');
-const db = require('../db/database');
+const db = require('../db/adminDb');
 const { hashPassword } = require('../services/authService');
 const directory = require('../services/directory');
 const idpProviders = require('../services/idpProviders');

@@ -2,6 +2,7 @@
  * LogicMonitor long-term history (migration v12): lm_ds_daily and lm_device_daily are written
  * incrementally at sample time, pruned by lm_daily_history_days, and read by the new routes.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { createRequire } from 'module';
 import request from 'supertest';
@@ -32,7 +33,7 @@ beforeAll(() => {
 });
 beforeEach(() => {
   for (const t of TABLES) db.prepare(`DELETE FROM ${t}`).run();
-  db.prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
+  adminOf(db).prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
 });
 
 const nowSec = () => Math.floor(Date.now() / 1000);

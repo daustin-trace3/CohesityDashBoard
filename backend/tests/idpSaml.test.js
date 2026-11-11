@@ -5,6 +5,7 @@
  * tables. Covers identity mapping, tampering, InResponseTo state, replay,
  * IdP-initiated gating, metadata import and SP metadata.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createRequire } from 'module';
 import fs from 'fs';
@@ -34,7 +35,7 @@ function insertProvider(slug, extra = {}) {
     want_assertions_signed: 1, allow_idp_initiated: 0, created_at: now, updated_at: now, ...extra,
   };
   const cols = Object.keys(row);
-  const info = db.prepare(`INSERT INTO idp_providers (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`).run(...Object.values(row));
+  const info = adminOf(db).prepare(`INSERT INTO idp_providers (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`).run(...Object.values(row));
   return info.lastInsertRowid;
 }
 
@@ -140,7 +141,7 @@ describe('SP-initiated sign-in', () => {
 
   it('rejects an expired state as sso_state', async () => {
     const { stateId, requestId } = await startLogin();
-    db.prepare('UPDATE idp_auth_state SET expires_at = ? WHERE id = ?').run(new Date(Date.now() - 1000).toISOString(), stateId);
+    adminOf(db).prepare('UPDATE idp_auth_state SET expires_at = ? WHERE id = ?').run(new Date(Date.now() - 1000).toISOString(), stateId);
     let err;
     try { await idpSaml.validateAcs(row(), urls, secretOf, stateStore, { SAMLResponse: b64(buildResponse({ inResponseTo: requestId })), RelayState: stateId }); } catch (e) { err = e; }
     expect(idpSaml.errorCode(err)).toBe('sso_state');

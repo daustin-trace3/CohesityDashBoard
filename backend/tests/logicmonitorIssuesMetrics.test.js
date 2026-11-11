@@ -4,6 +4,7 @@
  * the "unknown enum number stays quiet" rule and device-in-SDT suppression.
  * Rows are seeded by hand into the per-file test DB through the migration.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { createRequire } from 'module';
 
@@ -22,7 +23,7 @@ let sid;
 let hdsSeq;
 beforeEach(() => {
   for (const t of TABLES) db.prepare(`DELETE FROM ${t}`).run();
-  db.prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
+  adminOf(db).prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
   sid = db.prepare('INSERT INTO lm_sources (name, company, auth_mode, encrypted_credentials) VALUES (?, ?, ?, ?)')
     .run('Acme', 'acme', 'lmv1', encrypt(JSON.stringify({ accessId: 'a', accessKey: 'b' }))).lastInsertRowid;
   hdsSeq = 1000;
@@ -101,7 +102,7 @@ describe('firewall issues', () => {
     expect(got.filter((i) => i.target.startsWith('fw-few ')).map((i) => i.target).sort()).toEqual(['fw-few T1', 'fw-few T2']);
     expect(got.filter((i) => i.target.startsWith('fw-many'))).toHaveLength(3);
     // Fold threshold 2: fw-many has 3 down, which is more than 2, so one issue replaces them.
-    db.prepare("INSERT INTO app_settings (key, value) VALUES ('lm_tunnel_fold', '2')").run();
+    adminOf(db).prepare("INSERT INTO app_settings (key, value) VALUES ('lm_tunnel_fold', '2')").run();
     got = issuesOf('fw-tunnel-down');
     const folded = got.filter((i) => i.target.startsWith('fw-many'));
     expect(folded).toHaveLength(1);

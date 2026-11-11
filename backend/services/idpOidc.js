@@ -5,7 +5,7 @@
 const crypto = require('crypto');
 const axios = require('axios');
 const jose = require('jose');
-const db = require('../db/database');
+const db = require('../db/adminDb');
 const idpProviders = require('./idpProviders');
 
 const DISCOVERY_TTL_MS = 24 * 60 * 60 * 1000;

@@ -8,6 +8,9 @@
 // what triggers the require, so WP1 does not depend on WP2 landing first.
 function buildCoreApi(overrides = {}) {
   const db = overrides.db || require('../db/database');
+  // Admin file connection (db/adminSplit.js): the plugins table and any other
+  // admin table write goes here. A test that overrides db gets that same handle.
+  const adminDb = overrides.adminDb || overrides.db || require('../db/adminDb');
   const logger = overrides.logger || require('../utils/logger');
   const settings = overrides.settings || require('../services/settings');
   const encryption = overrides.encryption || require('../services/encryption');
@@ -15,6 +18,7 @@ function buildCoreApi(overrides = {}) {
 
   const api = {
     db,
+    adminDb,
     logger,
     settings,
     encryption,

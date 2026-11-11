@@ -2,7 +2,7 @@
 // (no express-session), and the first-run claim token.
 const argon2 = require('argon2');
 const crypto = require('crypto');
-const db = require('../db/database');
+const db = require('../db/adminDb');
 const logger = require('../utils/logger');
 const { resolveGrants } = require('./rbac');
 

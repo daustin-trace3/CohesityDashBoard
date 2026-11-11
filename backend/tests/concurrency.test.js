@@ -2,6 +2,7 @@
  * Bounded concurrency helper: mapLimit ordering, limit, failure isolation, and
  * the poller_calls_in_flight setting with its per-platform override.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, afterEach } from 'vitest';
 import { createRequire } from 'module';
 
@@ -71,7 +72,7 @@ describe('mapLimit', () => {
 
 describe('callsInFlight', () => {
   afterEach(() => {
-    db.prepare("DELETE FROM app_settings WHERE key IN ('poller_calls_in_flight', 'zzplat_calls_in_flight')").run();
+    adminOf(db).prepare("DELETE FROM app_settings WHERE key IN ('poller_calls_in_flight', 'zzplat_calls_in_flight')").run();
   });
 
   it('defaults to 4', () => {

@@ -2,6 +2,7 @@
  * Service groups on the Ops page: timeline rows on state change, the board
  * folding, per-day events, the LM-off case and the route guards.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { createRequire } from 'module';
 import express from 'express';
@@ -56,7 +57,7 @@ let sid;
 let coreDev;
 beforeEach(() => {
   for (const t of TABLES) db.prepare(`DELETE FROM ${t}`).run();
-  db.prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
+  adminOf(db).prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
   registry._reset();
   registry.init();
   registry.registerPlugin({ id: 'logicmonitor', name: 'LogicMonitor', apiVersion: 1, createRouter: () => (q, s, n) => n() });

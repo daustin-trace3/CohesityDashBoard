@@ -166,9 +166,15 @@ function Overview({ data }) {
 function DatabaseTab({ data, onRecompute, recomputing, notice }) {
   const db = data.database || {};
   const snap = db.snapshot;
+  // The data file and the admin file (users, settings, plugins) each have a row.
+  const files = db.files && db.files.length ? db.files : [{ role: 'data', path: db.path, fileBytes: db.fileBytes, walBytes: db.walBytes }];
   const rows = useMemo(
-    () => (snap?.tables || []).map(t => ({ ...t, share: db.fileBytes ? (t.bytes + t.indexBytes) / db.fileBytes : 0 })),
-    [snap, db.fileBytes]);
+    () => (snap?.tables || []).map(t => {
+      const f = files.find(x => x.role === (t.file || 'data'));
+      const size = f ? f.fileBytes : db.fileBytes;
+      return { ...t, file: t.file || 'data', share: size ? (t.bytes + t.indexBytes) / size : 0 };
+    }),
+    [snap, db.fileBytes, files]);
   const ctl = useTableControls(rows, { searchKeys: ['name'], defaultSortKey: 'bytes', defaultSortDir: 'desc', paginate: true, deepLink: false });
   const cp = db.lastCheckpoint;
 
@@ -180,8 +186,11 @@ function DatabaseTab({ data, onRecompute, recomputing, notice }) {
           {recomputing ? 'Working...' : 'Recompute now'}
         </button>}>
         <dl className="grid gap-x-6 gap-y-1.5 text-[13px]" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))' }}>
-          <div><dt className="text-ink-faint text-[11px]">Path</dt><dd className="text-ink break-all">{db.path || '-'}</dd></div>
-          <div><dt className="text-ink-faint text-[11px]">File / WAL</dt><dd className="text-ink tnum">{fmtBytes(db.fileBytes)} / {fmtBytes(db.walBytes)}</dd></div>
+          {files.map(f => (
+            <div key={f.role}><dt className="text-ink-faint text-[11px]">{f.role === 'admin' ? 'Admin file' : 'Data file'}</dt>
+              <dd className="text-ink break-all">{f.path || '-'}</dd>
+              <dd className="text-ink tnum">{fmtBytes(f.fileBytes)} / WAL {fmtBytes(f.walBytes)}{f.pageCount != null ? `, ${f.pageCount} pages, ${f.freelist} free` : ''}</dd></div>
+          ))}
           <div><dt className="text-ink-faint text-[11px]">Journal mode</dt><dd className="text-ink">{snap?.journalMode || '-'}</dd></div>
           <div><dt className="text-ink-faint text-[11px]">Page size / pages / free</dt><dd className="text-ink tnum">{snap ? `${snap.pageSize} / ${snap.pageCount} / ${snap.freelistPages}` : '-'}</dd></div>
           <div><dt className="text-ink-faint text-[11px]">Last checkpoint</dt>
@@ -197,7 +206,7 @@ function DatabaseTab({ data, onRecompute, recomputing, notice }) {
       ) : (
         <Panel title={`Tables (${snap.totals?.tables ?? rows.length}, ${fmtBytes((snap.totals?.bytes || 0) + (snap.totals?.indexBytes || 0))})`}
           actions={<CsvExportButton filename="icc-db-tables" rows={rows} columns={[
-            { label: 'Table', get: 'name' }, { label: 'Rows', get: 'rows' }, { label: 'Data bytes', get: 'bytes' },
+            { label: 'Table', get: 'name' }, { label: 'File', get: 'file' }, { label: 'Rows', get: 'rows' }, { label: 'Data bytes', get: 'bytes' },
             { label: 'Index bytes', get: 'indexBytes' }, { label: 'Share of file', get: r => (r.share * 100).toFixed(2) + '%' },
           ]} />}>
           <div className="flex flex-wrap items-center gap-2 mb-3">
@@ -208,6 +217,7 @@ function DatabaseTab({ data, onRecompute, recomputing, notice }) {
             <table className="w-full text-[13px]">
               <thead><tr className={thCls}>
                 <SortTh k="name" label="Table" ctl={ctl} />
+                <SortTh k="file" label="File" ctl={ctl} />
                 <SortTh k="rows" label="Rows" ctl={ctl} align="right" />
                 <SortTh k="bytes" label="Data" ctl={ctl} align="right" />
                 <SortTh k="indexBytes" label="Indexes" ctl={ctl} align="right" />
@@ -215,8 +225,9 @@ function DatabaseTab({ data, onRecompute, recomputing, notice }) {
               </tr></thead>
               <tbody>
                 {ctl.pageRows.map(t => (
-                  <tr key={t.name} className="border-b border-cohesity-border/40">
+                  <tr key={`${t.file}:${t.name}`} className="border-b border-cohesity-border/40">
                     <td className="py-1.5 pr-3 text-ink">{t.name}</td>
+                    <td className="py-1.5 pr-3 text-ink-muted">{t.file}</td>
                     <td className={`${tdCls} text-right`}>{Number(t.rows).toLocaleString()}</td>
                     <td className={`${tdCls} text-right`}>{fmtBytes(t.bytes)}</td>
                     <td className={`${tdCls} text-right`}>{fmtBytes(t.indexBytes)}</td>

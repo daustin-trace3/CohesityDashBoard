@@ -3,6 +3,7 @@
  * rollup, service picks and labels. Runs the logicmonitor migration into the
  * per-file test DB and builds tiny estates by hand.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { createRequire } from 'module';
 
@@ -19,7 +20,7 @@ beforeAll(() => { runMigrations(db, 'logicmonitor', lmMigrations); });
 const TABLES = ['lm_issue_history', 'lm_alerts', 'lm_device_groups', 'lm_devices', 'lm_sources'];
 beforeEach(() => {
   for (const t of TABLES) db.prepare(`DELETE FROM ${t}`).run();
-  db.prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
+  adminOf(db).prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
 });
 
 function ins(table, row) {

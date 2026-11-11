@@ -4,6 +4,7 @@
  * users / user_groups, deactivation of removed users, pinned users kept,
  * group-by-name resolution, and the notifier item after a failed sync.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { createRequire } from 'module';
 
@@ -61,7 +62,7 @@ let db; let okta; let idpSync; let idpProvision; let encryption; let notifier; l
 
 function addGroup(name, extra = {}) {
   const now = new Date().toISOString();
-  const info = db.prepare("INSERT INTO groups (name, description, is_system, created_at, provider, external_name, external_id, idp_provider_id) VALUES (?, '', 0, ?, 'idp', ?, ?, ?)")
+  const info = adminOf(db).prepare("INSERT INTO groups (name, description, is_system, created_at, provider, external_name, external_id, idp_provider_id) VALUES (?, '', 0, ?, 'idp', ?, ?, ?)")
     .run(`ICC ${name}`, now, name, extra.externalId || null, pid);
   return info.lastInsertRowid;
 }
@@ -78,7 +79,7 @@ beforeAll(() => {
   notifier = require('../services/alertNotifier');
   okta.setHttp(fakeHttp);
   const now = new Date().toISOString();
-  pid = db.prepare(`INSERT INTO idp_providers (name, slug, type, enabled, issuer, client_id, mgmt_kind, mgmt_base_url, mgmt_token, mgmt_deactivate_removed, created_at, updated_at)
+  pid = adminOf(db).prepare(`INSERT INTO idp_providers (name, slug, type, enabled, issuer, client_id, mgmt_kind, mgmt_base_url, mgmt_token, mgmt_deactivate_removed, created_at, updated_at)
     VALUES ('Okta Lab', 'okta-lab', 'oidc', 1, 'https://dev-1.okta.com', 'cid', 'okta', ?, ?, 1, ?, ?)`)
     .run(BASE, encryption.encrypt(fake.token), now, now).lastInsertRowid;
 });
@@ -162,7 +163,7 @@ describe('runSync', () => {
     expect(r.message).toMatch(/Does Not Exist/);
     expect(r.deactivated).toBe(0);
     expect(user('alice@lab.test').is_active).toBe(before);
-    db.prepare('DELETE FROM groups WHERE id = ?').run(gX);
+    adminOf(db).prepare('DELETE FROM groups WHERE id = ?').run(gX);
   });
 
   it('records a failed sync, keeps users, and raises the notifier item', async () => {
@@ -184,7 +185,7 @@ describe('runSync', () => {
 
   it('skips a provider without a Management API', async () => {
     const now = new Date().toISOString();
-    const id = db.prepare("INSERT INTO idp_providers (name, slug, type, created_at, updated_at) VALUES ('Bare', 'bare', 'saml', ?, ?)").run(now, now).lastInsertRowid;
+    const id = adminOf(db).prepare("INSERT INTO idp_providers (name, slug, type, created_at, updated_at) VALUES ('Bare', 'bare', 'saml', ?, ?)").run(now, now).lastInsertRowid;
     expect(await idpSync.runSync(id, 'manual')).toMatchObject({ skipped: true });
     expect(await idpSync.runSync(99999, 'manual')).toMatchObject({ skipped: true });
   });

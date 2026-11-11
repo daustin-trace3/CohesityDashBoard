@@ -3,7 +3,7 @@
 // admin:users:view (GET) / admin:users:manage (mutations), the same gate as
 // /api/directory: linking an Okta group is an access change.
 const express = require('express');
-const db = require('../db/database');
+const db = require('../db/adminDb');
 const idpProviders = require('../services/idpProviders');
 const idpProvision = require('../services/idpProvision');
 const idpSync = require('../services/idpSync');

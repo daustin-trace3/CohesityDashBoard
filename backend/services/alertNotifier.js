@@ -2,6 +2,7 @@ const { scheduleCron } = require('../core/cronSchedule');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const db = require('../db/database');
+const { tableExistsAny } = require('../db/adminSplit');
 const logger = require('../utils/logger');
 const { getNotificationSettings, getSmtpPassword } = require('./settings');
 const registry = require('../core/registry');
@@ -422,7 +423,7 @@ function collectCiscoAlerts() {
 /** Identity provider Management API syncs that last failed. One item per
  *  provider; a later good sync clears mgmt_last_status and ends reminders. */
 function collectIdpIssues() {
-  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'idp_providers'").get()) return [];
+  if (!tableExistsAny(db, 'idp_providers')) return [];
   const rows = db.prepare("SELECT id, name, mgmt_last_sync_at AS lastSync, mgmt_last_error AS err FROM idp_providers WHERE mgmt_last_status = 'error'").all();
   return rows.map((r) => ({
     sourceKey: `idp:sync:${r.id}`,

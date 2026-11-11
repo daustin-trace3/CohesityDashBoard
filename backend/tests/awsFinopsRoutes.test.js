@@ -503,6 +503,8 @@ describe('Integrations', () => {
     registry.getPlugin = (id) => (id === 'aws' ? { id: 'aws', enabled: true } : realGetPlugin(id));
     const ops = require('../routes/ops');
     const opsApp = express();
+    // The summary lists only platforms the caller may view; stand in an all-access caller.
+    opsApp.use((req, res, next) => { req.auth = { grants: ['*:*:*'] }; next(); });
     opsApp.use('/api/ops', ops);
     return Promise.resolve(request(opsApp).get('/api/ops/summary')).finally(() => { registry.getPlugin = realGetPlugin; }).then((res) => {
       expect(res.status).toBe(200);

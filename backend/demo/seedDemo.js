@@ -24,9 +24,11 @@ process.env.DASHBOARD_DB_PATH = dbPath;
 require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 
 if (force) {
-  for (const suffix of ['', '-wal', '-shm']) {
-    const p = dbPath + suffix;
-    try { fs.rmSync(p); } catch { /* did not exist */ }
+  // The data file and its admin file (db/adminSplit.js), each with -wal and -shm.
+  for (const base of [dbPath, require('../db/adminSplit').adminPathFor(dbPath)]) {
+    for (const suffix of ['', '-wal', '-shm']) {
+      try { fs.rmSync(base + suffix); } catch { /* did not exist */ }
+    }
   }
 }
 
@@ -35,6 +37,7 @@ if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
 // Requiring db/database triggers schema creation via migrations.
 const db = require('../db/database');
+const { adminOf } = require('../db/adminSplit');
 const argon2 = require('argon2');
 const { encrypt } = require('../services/encryption');
 
@@ -54,8 +57,8 @@ const { seedBluecat } = require('./generators/bluecat');
 const { seedLogicmonitor } = require('./generators/logicmonitor');
 
 const SEEDED_TABLES = [
-  // core
-  'user_groups', 'users', 'app_settings',
+  // core (users, user_groups and app_settings live in the admin file and are
+  // wiped separately, see wipeSeededTables)
   // cohesity
   'replication_status_cache', 'consumption_breakdown', 'license_view_detail', 'cohesity_views',
   'license_meter_usage', 'license_type_usage', 'license_usage',
@@ -144,6 +147,11 @@ const SEEDED_TABLES = [
 const OPTIONAL_TABLES = new Set(['vcenter_host_nic_neighbors', 'lm_webhook_events', 'lm_interface_baseline', 'lm_sites', 'lm_circuit_events', 'lm_trend_findings']);
 
 function wipeSeededTables(database) {
+  // Admin tables are written through the admin connection, never inside a data transaction.
+  const admin = adminOf(database);
+  admin.transaction(() => {
+    for (const table of ['user_groups', 'users', 'app_settings']) admin.exec(`DELETE FROM ${table}`);
+  })();
   database.transaction(() => {
     for (const table of SEEDED_TABLES) {
       if (OPTIONAL_TABLES.has(table)

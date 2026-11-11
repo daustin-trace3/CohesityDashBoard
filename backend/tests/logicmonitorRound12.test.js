@@ -4,6 +4,7 @@
  * checkpoint "<id>_<host>" parse and the polling collectors on /sites, carrier aliases,
  * the Trends service (daily buckets and movers), raw datapoint rules and their routes.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { createRequire } from 'module';
 import request from 'supertest';
@@ -44,7 +45,7 @@ beforeAll(() => {
 });
 beforeEach(() => {
   for (const t of TABLES) db.prepare(`DELETE FROM ${t}`).run();
-  db.prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
+  adminOf(db).prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
   sid = db.prepare('INSERT INTO lm_sources (name, company, auth_mode, encrypted_credentials) VALUES (?, ?, ?, ?)')
     .run('Acme', 'acme', 'lmv1', encrypt(JSON.stringify({ accessId: 'a', accessKey: 'b' }))).lastInsertRowid;
   hdsSeq = 1000;
@@ -307,7 +308,7 @@ describe('A3: carriers', () => {
     let unk = await request(app).get(`${API}/circuits/unknown-carriers`);
     expect(unk.body.map((r) => r.port).sort()).toEqual(['Te0/0', 'Te0/1']);
     expect(unk.body[0]).toHaveProperty('label');
-    db.prepare("INSERT INTO app_settings (key, value) VALUES ('lm_carrier_aliases', 'acx=Acme Exchange')").run();
+    adminOf(db).prepare("INSERT INTO app_settings (key, value) VALUES ('lm_carrier_aliases', 'acx=Acme Exchange')").run();
     res = await request(app).get(`${API}/circuits`);
     expect(res.body.find((r) => r.instanceId === 1)).toMatchObject({ carrier: 'Acme Exchange', carrierKnown: true });
     unk = await request(app).get(`${API}/circuits/unknown-carriers`);
@@ -484,7 +485,7 @@ describe('A5: raw datapoint rules', () => {
   it('computeIssues carries raw-threshold issues from the saved setting', () => {
     dev(1, 'sw-a');
     rv(1, 'Cisco_NTP', 'ntp', 'Offset', 150);
-    db.prepare("INSERT INTO app_settings (key, value) VALUES ('lm_raw_rules', ?)").run(JSON.stringify([rule()]));
+    adminOf(db).prepare("INSERT INTO app_settings (key, value) VALUES ('lm_raw_rules', ?)").run(JSON.stringify([rule()]));
     expect(issuesOf('raw-threshold')).toHaveLength(1);
     expect(lmIssues.METRIC_ISSUE_TYPES).toContain('raw-threshold');
   });

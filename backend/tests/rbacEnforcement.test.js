@@ -9,6 +9,7 @@
  * registry) resolve to the SAME module instances as this test's — see the
  * equivalent note in tests/characterization.api.test.js.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createRequire } from 'module';
 import crypto from 'crypto';
@@ -24,13 +25,13 @@ let authService;
 async function insertUser(username, password, groupName) {
   const now = new Date().toISOString();
   const passwordHash = await authService.hashPassword(password);
-  const info = db.prepare(`
+  const info = adminOf(db).prepare(`
     INSERT INTO users (username, password_hash, display_name, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?)
   `).run(username, passwordHash, username, now, now);
 
   const group = db.prepare('SELECT id FROM groups WHERE name = ?').get(groupName);
-  db.prepare('INSERT INTO user_groups (user_id, group_id) VALUES (?, ?)').run(info.lastInsertRowid, group.id);
+  adminOf(db).prepare('INSERT INTO user_groups (user_id, group_id) VALUES (?, ?)').run(info.lastInsertRowid, group.id);
 
   return info.lastInsertRowid;
 }
@@ -109,7 +110,7 @@ describe('scoped service account key', () => {
     const key = `icc_${crypto.randomBytes(20).toString('hex')}`;
     const keyHash = crypto.createHash('sha256').update(key).digest('hex');
     const now = new Date().toISOString();
-    db.prepare(`
+    adminOf(db).prepare(`
       INSERT INTO service_accounts (name, key_hash, key_prefix, permissions, is_active, created_at)
       VALUES (?, ?, ?, ?, 1, ?)
     `).run('scoped-test-account', keyHash, key.slice(0, 8), JSON.stringify(['cohesity:clusters:view']), now);
@@ -128,7 +129,7 @@ describe('scoped service account key', () => {
     const key = `icc_${crypto.randomBytes(20).toString('hex')}`;
     const keyHash = crypto.createHash('sha256').update(key).digest('hex');
     const now = new Date().toISOString();
-    db.prepare(`
+    adminOf(db).prepare(`
       INSERT INTO service_accounts (name, key_hash, key_prefix, permissions, is_active, created_at)
       VALUES (?, ?, ?, ?, 0, ?)
     `).run('inactive-test-account', keyHash, key.slice(0, 8), JSON.stringify(['*:*:*']), now);

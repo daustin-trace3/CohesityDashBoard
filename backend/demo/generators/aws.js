@@ -11,6 +11,7 @@
 // billing services with token usage quantities, tag allocation (Environment, Team), Savings Plan
 // utilization and coverage, two plans, anomalies, forecasts, budgets, recommendation lifecycle and
 // capability status. Everything is relative to now and rewritten (DELETE then INSERT) on each seed.
+const { adminOf } = require('../../db/adminSplit');
 const { randInt, randFloat, pick, chance, rngFor } = require('./core');
 
 const EC2_INSTANCES = [
@@ -409,7 +410,7 @@ function seedFinopsRound2(db, accountId, ctx) {
 function seedAws(db, { now, encrypt }) {
   void now;
 
-  db.prepare(`
+  adminOf(db).prepare(`
     INSERT INTO app_settings (key, value, updated_at) VALUES ('platform_aws_enabled', '1', datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `).run();
@@ -1062,7 +1063,7 @@ function seedAws(db, { now, encrypt }) {
     }
   }
   db.prepare('UPDATE aws_accounts SET last_finops_capture_at = datetime(\'now\', \'-6 hours\'), finops_backfill_at = datetime(\'now\', \'-300 days\') WHERE id = ?').run(accountId);
-  const upsertSetting = db.prepare(`
+  const upsertSetting = adminOf(db).prepare(`
     INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `);

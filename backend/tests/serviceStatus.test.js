@@ -11,6 +11,7 @@
  * of racing a real network call. Tests that exercise the AI path enable it
  * explicitly and call runPending() directly (awaited), never through sweep().
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { createRequire } from 'module';
 import express from 'express';
@@ -635,7 +636,7 @@ describe('platform mode (default)', () => {
   });
 
   it('the stored default is platform', () => {
-    db.prepare("DELETE FROM app_settings WHERE key = 'service_status_mode'").run();
+    adminOf(db).prepare("DELETE FROM app_settings WHERE key = 'service_status_mode'").run();
     expect(require('../services/settings').getServiceStatusSettings().serviceStatusMode).toBe('platform');
   });
 

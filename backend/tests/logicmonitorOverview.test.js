@@ -3,6 +3,7 @@
  * hand-built estate straight into the tables and drives both the service and
  * GET /api/logicmonitor/overview. Expected numbers are computed from the seed.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { createRequire } from 'module';
 import request from 'supertest';
@@ -36,7 +37,7 @@ const TABLES = ['lm_blame_history', 'lm_issue_history', 'lm_metrics_history', 'l
 
 function wipe() {
   for (const t of TABLES) db.prepare(`DELETE FROM ${t}`).run();
-  db.prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
+  adminOf(db).prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
 }
 function ins(table, row) {
   const cols = Object.keys(row);

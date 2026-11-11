@@ -4,6 +4,7 @@
  * pieces against a hand-built estate: computeCircuits roles, lm_sites.wan_*, the circuit issue
  * rules, the interface-flapping skip, the flap pattern and recordCircuitTransitions.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { createRequire } from 'module';
 
@@ -29,7 +30,7 @@ const TABLES = ['lm_circuit_events', 'lm_issue_history', 'lm_topology_links', 'l
 
 function wipe() {
   for (const t of TABLES) db.prepare(`DELETE FROM ${t}`).run();
-  db.prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
+  adminOf(db).prepare("DELETE FROM app_settings WHERE key LIKE 'lm_%'").run();
 }
 
 function ins(table, row) {

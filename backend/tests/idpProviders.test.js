@@ -3,6 +3,7 @@
  * (routes/idp.js): validation, secret handling, enable gate, public URLs,
  * sign-in state and return-path sanitising.
  */
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { createRequire } from 'module';
 import request from 'supertest';
@@ -27,9 +28,9 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
-  db.prepare('DELETE FROM idp_providers').run();
-  db.prepare('DELETE FROM idp_auth_state').run();
-  db.prepare("DELETE FROM groups WHERE provider = 'idp'").run();
+  adminOf(db).prepare('DELETE FROM idp_providers').run();
+  adminOf(db).prepare('DELETE FROM idp_auth_state').run();
+  adminOf(db).prepare("DELETE FROM groups WHERE provider = 'idp'").run();
   settings.setSetting('icc_base_url', '');
 });
 
@@ -156,8 +157,8 @@ describe('update, secrets and the enable gate', () => {
   it('delete removes the provider, its linked groups and their grants but keeps users', () => {
     const row = providers.createProvider(oidcBody());
     const now = new Date().toISOString();
-    const gid = db.prepare("INSERT INTO groups (name, is_system, created_at, provider, idp_provider_id, external_name) VALUES ('Linked', 0, ?, 'idp', ?, 'Linked')").run(now, row.id).lastInsertRowid;
-    db.prepare("INSERT INTO role_grants (subject_type, subject_id, permission, created_at) VALUES ('group', ?, 'cohesity:*:view', ?)").run(gid, now);
+    const gid = adminOf(db).prepare("INSERT INTO groups (name, is_system, created_at, provider, idp_provider_id, external_name) VALUES ('Linked', 0, ?, 'idp', ?, 'Linked')").run(now, row.id).lastInsertRowid;
+    adminOf(db).prepare("INSERT INTO role_grants (subject_type, subject_id, permission, created_at) VALUES ('group', ?, 'cohesity:*:view', ?)").run(gid, now);
     expect(providers.toPublic(row).linkedGroups).toBe(1);
     providers.deleteProvider(row.id);
     expect(db.prepare('SELECT COUNT(*) c FROM groups WHERE id = ?').get(gid).c).toBe(0);
@@ -204,7 +205,7 @@ describe('sign-in state', () => {
     expect(providers.consumeState(id)).toBeNull();
 
     const old = providers.createState({ providerId: row.id, kind: 'oidc' });
-    db.prepare("UPDATE idp_auth_state SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(old);
+    adminOf(db).prepare("UPDATE idp_auth_state SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(old);
     expect(providers.consumeState(old)).toBeNull();
     expect(db.prepare('SELECT COUNT(*) c FROM idp_auth_state WHERE id = ?').get(old).c).toBe(0);
   });
@@ -215,15 +216,15 @@ describe('sign-in state', () => {
     providers.setStateRequestId(id, '_req123');
     expect(providers.getStateByRequestId('_req123').id).toBe(id);
     expect(providers.getStateByRequestId('_other')).toBeNull();
-    db.prepare("UPDATE idp_auth_state SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(id);
+    adminOf(db).prepare("UPDATE idp_auth_state SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(id);
     expect(providers.getStateByRequestId('_req123')).toBeNull();
   });
 
   it('pruneState drops expired state and assertions', () => {
     const row = providers.createProvider(oidcBody());
     const id = providers.createState({ providerId: row.id, kind: 'oidc' });
-    db.prepare("UPDATE idp_auth_state SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(id);
-    db.prepare("INSERT OR REPLACE INTO idp_seen_assertions (assertion_id, provider_id, expires_at) VALUES ('a1', ?, '2000-01-01T00:00:00.000Z'), ('a2', ?, '2999-01-01T00:00:00.000Z')").run(row.id, row.id);
+    adminOf(db).prepare("UPDATE idp_auth_state SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(id);
+    adminOf(db).prepare("INSERT OR REPLACE INTO idp_seen_assertions (assertion_id, provider_id, expires_at) VALUES ('a1', ?, '2000-01-01T00:00:00.000Z'), ('a2', ?, '2999-01-01T00:00:00.000Z')").run(row.id, row.id);
     providers.pruneState();
     expect(db.prepare('SELECT COUNT(*) c FROM idp_auth_state').get().c).toBe(0);
     expect(db.prepare('SELECT assertion_id FROM idp_seen_assertions').all()).toEqual([{ assertion_id: 'a2' }]);

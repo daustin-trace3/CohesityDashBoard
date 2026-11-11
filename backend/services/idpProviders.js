@@ -2,7 +2,7 @@
 // the public URLs an admin pastes into the IdP, and the short-lived sign-in
 // state. Pure data layer; the protocol work lives in idpOidc.js / idpSaml.js.
 const crypto = require('crypto');
-const db = require('../db/database');
+const db = require('../db/adminDb');
 const { encrypt, decrypt } = require('./encryption');
 const { publicBase, apiPrefix } = require('../utils/publicUrl');
 

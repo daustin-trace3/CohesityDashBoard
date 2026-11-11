@@ -2,7 +2,7 @@
 // gated in app.js by admin:users:view (GET) / admin:users:manage (mutations),
 // the same gate as /api/users since linking an AD group is an access change.
 const express = require('express');
-const db = require('../db/database');
+const db = require('../db/adminDb');
 const directory = require('../services/directory');
 const directorySync = require('../services/directorySync');
 const { encrypt } = require('../services/encryption');

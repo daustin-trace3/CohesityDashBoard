@@ -2,6 +2,7 @@
 // holds. Every table access is guarded, because a slim install may lack a
 // platform's tables entirely.
 const db = require('../../db/database');
+const { tableExistsAny } = require('../../db/adminSplit');
 const { createPlatformAdvisor, fmtBytes } = require('../platformAdvisor');
 const { getSetting } = require('../settings');
 
@@ -11,7 +12,7 @@ let globalAccounts = null;
 try { globalAccounts = require('../../core/accounts'); } catch { /* single-tenant branch */ }
 
 function tableExists(name) {
-  try { return !!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name); }
+  try { return tableExistsAny(db, name); }
   catch { return false; }
 }
 

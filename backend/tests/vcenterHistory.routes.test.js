@@ -1,3 +1,4 @@
+const adminOf = (d) => d.adminHandle || d; // admin tables are written through the admin connection (db/adminSplit.js)
 // Route-level checks for the vCenter long-term history reads: VM and host
 // trends (raw vs daily granularity), the per-host window table, datastore
 // growth, the datastore list growth fields and the retention config.
@@ -25,7 +26,7 @@ beforeAll(() => {
     'vcenter_datastore_history', 'vcenter_datastores', 'vcenter_vms', 'vcenter_hosts']) {
     db.prepare(`DELETE FROM ${t}`).run();
   }
-  db.prepare("DELETE FROM app_settings WHERE key LIKE 'vcenter_%_days'").run();
+  adminOf(db).prepare("DELETE FROM app_settings WHERE key LIKE 'vcenter_%_days'").run();
   db.prepare("DELETE FROM vcenter_vcenters WHERE name = 'hist-vc'").run();
   vcId = db.prepare(`
     INSERT INTO vcenter_vcenters (name, host, username, encrypted_credentials, ssl_verify, polling_interval_minutes)

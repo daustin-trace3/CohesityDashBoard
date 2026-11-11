@@ -1,4 +1,4 @@
-// Transaction shim installed on the database handle (db/database.js).
+// Transaction shim installed on every database handle (db/adminSplit.js).
 //
 // better-sqlite3's db.transaction(fn)() is DEFERRED: it takes the write lock at
 // the first write, and if the other process committed since its first read it
@@ -25,7 +25,7 @@ function sleepSync(ms) {
 // file:line of the db.transaction(...) call site, once per definition.
 function captureOrigin() {
   const lines = String(new Error().stack || '').split('\n').slice(1);
-  const skip = [`core${path.sep}dbTransactions.js`, 'core/dbTransactions.js', `db${path.sep}database.js`, 'db/database.js'];
+  const skip = [`core${path.sep}dbTransactions.js`, 'core/dbTransactions.js', `db${path.sep}database.js`, 'db/database.js', `db${path.sep}adminDb.js`, 'db/adminDb.js', `db${path.sep}adminSplit.js`, 'db/adminSplit.js'];
   for (const line of lines) {
     if (skip.some((s) => line.includes(s))) continue;
     const m = line.match(/\(?([^()\s]+:\d+):\d+\)?\s*$/);
@@ -34,15 +34,44 @@ function captureOrigin() {
   return 'unknown';
 }
 
-function installTransactionShim(db, { logger, role = 'web', slowMs = 2000, busyRetries = 2 } = {}) {
+function installTransactionShim(db, { logger, role = 'web', slowMs = 2000, busyRetries = 2, anchor = false } = {}) {
   if (db.__iccTxnShim) return db;
   counters.slowMs = slowMs;
   const original = db.transaction.bind(db);
   const retries = role === 'poller' ? Math.max(0, busyRetries) : 0;
 
+  // Anchor mode (a data connection with the admin file attached, db/adminSplit.js).
+  // BEGIN IMMEDIATE on a connection with an attached database takes the write
+  // lock on EVERY attached file, so a poller transaction would block admin
+  // writes. In anchor mode the default and immediate modes run as a DEFERRED
+  // transaction whose body first writes one row of main.icc_txn_anchor. That
+  // takes the write lock on main up front (busy_timeout applies, no
+  // SQLITE_BUSY_SNAPSHOT) and leaves the attached file unlocked unless the body
+  // itself writes it.
+  let anchorStmt = null;
+  let anchorDue = false;
+  const bumpAnchor = () => {
+    if (!anchorDue) return;
+    anchorDue = false;
+    if (!anchorStmt) anchorStmt = db.prepare('UPDATE main.icc_txn_anchor SET n = n + 1');
+    anchorStmt.run();
+  };
+
   db.transaction = function transaction(fn) {
     const origin = captureOrigin();
-    const txn = original(fn);
+    const anchored = anchor ? original((...args) => { bumpAnchor(); return fn(...args); }) : null;
+    let plain = anchored ? null : original(fn);
+    const plainTxn = () => (plain || (plain = original(fn)));
+
+    // The function that runs a mode. In anchor mode only the outermost run
+    // anchors; a nested run is a savepoint inside someone else's transaction.
+    const call = (mode, args) => {
+      if (anchored && (mode === 'default' || mode === 'immediate')) {
+        anchorDue = !db.inTransaction;
+        try { return anchored.deferred(...args); } finally { anchorDue = false; }
+      }
+      return plainTxn()[mode](...args);
+    };
 
     const timed = (mode) => (...args) => {
       // Only the outermost run may retry; a nested run is a savepoint inside
@@ -52,7 +81,7 @@ function installTransactionShim(db, { logger, role = 'web', slowMs = 2000, busyR
       for (;;) {
         const start = Date.now();
         try {
-          return txn[mode](...args);
+          return call(mode, args);
         } catch (err) {
           if (outermost && attempt < retries && err && BUSY_CODES.has(err.code)) {
             attempt += 1;
