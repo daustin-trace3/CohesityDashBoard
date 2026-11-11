@@ -15,6 +15,12 @@ let csrfToken = null;
 
 export function setCsrfToken(token) {
   csrfToken = token;
+  // Plugin bundles call fetch() directly and cannot import this module, so
+  // without this they send session mutations with no x-csrf-token header and
+  // middleware/csrf.js rejects them with a bare 403 (surfaced in the UI as
+  // "Save failed CSRF", seen on the BlueCat gateway override). Published
+  // alongside window.React/Chart, same as feat/multi-tenant.
+  if (typeof window !== 'undefined') window.__ICC_CSRF_TOKEN__ = token;
 }
 
 // Auth-exempt endpoints: a 401 from these must not trigger the redirect below
