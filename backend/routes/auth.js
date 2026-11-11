@@ -17,7 +17,7 @@ const {
   getClaimToken,
   authEnabled,
 } = require('../services/authService');
-const { resolveGrants, hasPermission } = require('../services/rbac');
+const { resolveGrants, hasPermission, ALL_ACCESS } = require('../services/rbac');
 const { setSetting } = require('../services/settings');
 
 const router = express.Router();
@@ -193,7 +193,7 @@ router.get('/session', (req, res) => {
     if (!authEnabled()) {
       return res.json({
         authEnabled: false,
-        user: { id: null, username: 'anonymous', displayName: 'Open access', permissions: ['*:*:*'] },
+        user: { id: null, username: 'anonymous', displayName: 'Open access', permissions: ALL_ACCESS.slice() },
         csrfToken: null,
       });
     }

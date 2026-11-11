@@ -44,6 +44,9 @@ function matches(grant, required) {
   const [gNs, gSection, gLevel] = g;
   const [rNs, rSection, rLevel] = r;
 
+  // Wildcard namespace covers every platform and ops but never administration:
+  // admin:... is satisfied only by a grant whose namespace is literally admin.
+  if (gNs === '*' && rNs === 'admin') return false;
   if (!segmentMatches(gNs, rNs)) return false;
   if (!segmentMatches(gSection, rSection)) return false;
   return levelMatches(gLevel, rLevel);
@@ -86,4 +89,8 @@ function resolveGrants(db, userId) {
   return Array.from(new Set([...userGrants, ...groupGrants]));
 }
 
-module.exports = { matches, hasPermission, resolveGrants };
+// Every grant a global admin (or open access, or the legacy env key) holds.
+// The wildcard namespace no longer covers admin, so admin:*:* is listed too.
+const ALL_ACCESS = ['*:*:*', 'admin:*:*'];
+
+module.exports = { matches, hasPermission, resolveGrants, ALL_ACCESS };

@@ -193,7 +193,7 @@ describe('/api/system/health', () => {
   let grants;
   let app;
   beforeEach(() => {
-    grants = ['*:*:*'];
+    grants = ['*:*:*', 'admin:*:*'];
     app = express();
     app.use((req, res, next) => { req.auth = { grants }; next(); });
     app.use('/api/system/health', router);
@@ -268,5 +268,45 @@ describe('/api/system/health', () => {
     const snap = JSON.parse(getSetting('icc_health_db_snapshot'));
     expect(snap.tables.length).toBeGreaterThan(10);
     expect(getSetting('icc_health_db_refresh_requested') || '').toBe('');
+  });
+
+  it('a snapshot is held while polls run, while the write-ahead log is large, or when switched off', () => {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'icc-health-'));
+    const file = path.join(dir, 'x.db');
+    fs.writeFileSync(file, '');
+    const fake = { name: file };
+    try {
+      expect(systemHealth.snapshotHold(fake, { polling: { active: 0 } })).toBeNull();
+      expect(systemHealth.snapshotHold(fake, { polling: { active: 2 } })).toMatch(/2 polls in flight/);
+      fs.writeFileSync(`${file}-wal`, Buffer.alloc(2048));
+      expect(systemHealth.snapshotHold(fake, { polling: { active: 0 }, walMaxBytes: 1024 })).toMatch(/write-ahead log is 0 MB/);
+      expect(systemHealth.snapshotHold(fake, { polling: { active: 0 }, walMaxBytes: 4096 })).toBeNull();
+      setSetting(systemHealth.SNAPSHOT_SWITCH_KEY, '0');
+      expect(systemHealth.snapshotHold(fake, { polling: { active: 0 } })).toMatch(/switched off/);
+      setSetting(systemHealth.SNAPSHOT_SWITCH_KEY, '');
+      process.env.ICC_HEALTH_SNAPSHOT = '0';
+      expect(systemHealth.snapshotHold(fake, { polling: { active: 0 } })).toMatch(/ICC_HEALTH_SNAPSHOT=0/);
+    } finally {
+      delete process.env.ICC_HEALTH_SNAPSHOT;
+      setSetting(systemHealth.SNAPSHOT_SWITCH_KEY, '');
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the sweep leaves a pending refresh in place while the switch is off', async () => {
+    setSetting('icc_health_db_snapshot', '');
+    setSetting('icc_health_db_refresh_requested', new Date().toISOString());
+    setSetting(systemHealth.SNAPSHOT_SWITCH_KEY, '0');
+    try {
+      await systemHealth.sweepTick();
+      expect(getSetting('icc_health_db_snapshot') || '').toBe('');
+      expect(getSetting('icc_health_db_refresh_requested') || '').not.toBe('');
+    } finally {
+      setSetting(systemHealth.SNAPSHOT_SWITCH_KEY, '');
+      setSetting('icc_health_db_refresh_requested', '');
+    }
   });
 });

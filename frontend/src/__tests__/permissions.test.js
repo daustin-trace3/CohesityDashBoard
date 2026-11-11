@@ -29,9 +29,9 @@ describe('matches', () => {
     expect(matches('cohesity:alerts:*', 'cohesity:alerts:manage')).toBe(true);
   });
 
-  it('full wildcard (admin) matches everything', () => {
+  it('full wildcard matches every non-admin permission (admin needs its own grant)', () => {
     expect(matches('*:*:*', 'cohesity:alerts:view')).toBe(true);
-    expect(matches('*:*:*', 'admin:settings:manage')).toBe(true);
+    expect(matches('*:*:*', 'admin:settings:manage')).toBe(false);
   });
 
   it('level hierarchy: manage grant satisfies view requirement', () => {
@@ -108,5 +108,22 @@ describe('hasPermission', () => {
     const grants = ['cohesity:*:view', 'pure:*:view', 'netapp:*:view'];
     expect(hasPermission(grants, 'cohesity:alerts:view')).toBe(true);
     expect(hasPermission(grants, 'cohesity:alerts:manage')).toBe(false);
+  });
+});
+
+describe('wildcard namespace excludes admin (rule change A)', () => {
+  it('*:*:view does not satisfy admin:settings:view', () => {
+    expect(matches('*:*:view', 'admin:settings:view')).toBe(false);
+  });
+  it('*:*:* does not satisfy admin:users:manage', () => {
+    expect(matches('*:*:*', 'admin:users:manage')).toBe(false);
+    expect(hasPermission(['*:*:*'], 'admin:users:manage')).toBe(false);
+  });
+  it('admin:*:view satisfies admin:settings:view', () => {
+    expect(matches('admin:*:view', 'admin:settings:view')).toBe(true);
+  });
+  it('*:*:view still satisfies ops and platform requirements', () => {
+    expect(matches('*:*:view', 'ops:*:view')).toBe(true);
+    expect(matches('*:*:view', 'pure:alerts:view')).toBe(true);
   });
 });

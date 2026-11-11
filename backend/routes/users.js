@@ -7,6 +7,7 @@ const db = require('../db/adminDb');
 const { hashPassword } = require('../services/authService');
 const directory = require('../services/directory');
 const idpProviders = require('../services/idpProviders');
+const { buildCatalog } = require('../services/permissionCatalog');
 
 const router = express.Router();
 
@@ -291,6 +292,76 @@ router.get('/grants', (req, res) => {
     subjectId: r.subject_id,
     permission: r.permission,
   })));
+});
+
+// Every distinct grant on record (users, groups, service accounts), so the
+// catalog lists a section that only a stored grant mentions.
+function allStoredGrants() {
+  const set = new Set(
+    db.prepare('SELECT DISTINCT permission FROM role_grants').all().map((r) => r.permission)
+  );
+  for (const row of db.prepare('SELECT permissions FROM service_accounts').all()) {
+    try {
+      const list = JSON.parse(row.permissions);
+      if (Array.isArray(list)) list.forEach((p) => set.add(p));
+    } catch { /* unreadable permissions column */ }
+  }
+  return Array.from(set);
+}
+
+router.get('/permission-catalog', (req, res, next) => {
+  try {
+    res.json(buildCatalog({ storedGrants: allStoredGrants() }));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Atomic replace of one subject's whole grant set (the grants editor's Save).
+router.put('/grants/:subjectType/:subjectId', (req, res, next) => {
+  try {
+    const { subjectType } = req.params;
+    if (subjectType !== 'user' && subjectType !== 'group') {
+      return res.status(400).json({ error: "subjectType must be 'user' or 'group'." });
+    }
+    if (!/^\d+$/.test(req.params.subjectId)) {
+      return res.status(400).json({ error: 'subjectId must be an integer.' });
+    }
+    const id = Number(req.params.subjectId);
+    const body = req.body || {};
+    if (!Array.isArray(body.permissions)) {
+      return res.status(400).json({ error: 'permissions must be an array.' });
+    }
+    const wanted = [];
+    for (const raw of body.permissions) {
+      const p = String(raw).toLowerCase();
+      if (!PERMISSION_PATTERN.test(p)) {
+        return res.status(400).json({ error: `Invalid permission: ${String(raw)}. Use <namespace>:<section>:<view|manage|*>.` });
+      }
+      if (!wanted.includes(p)) wanted.push(p);
+    }
+    wanted.sort();
+
+    const exists = subjectType === 'user'
+      ? db.prepare('SELECT 1 FROM users WHERE id = ?').get(id)
+      : db.prepare('SELECT 1 FROM groups WHERE id = ?').get(id);
+    if (!exists) {
+      return res.status(404).json({ error: subjectType === 'user' ? 'User not found.' : 'Group not found.' });
+    }
+
+    const now = new Date().toISOString();
+    db.transaction(() => {
+      db.prepare('DELETE FROM role_grants WHERE subject_type = ? AND subject_id = ?').run(subjectType, id);
+      const insert = db.prepare(
+        'INSERT INTO role_grants (subject_type, subject_id, permission, created_at) VALUES (?, ?, ?, ?)'
+      );
+      for (const p of wanted) insert.run(subjectType, id, p, now);
+    })();
+
+    res.json({ permissions: wanted });
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.post('/grants', (req, res, next) => {

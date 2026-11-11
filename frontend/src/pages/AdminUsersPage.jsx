@@ -1,19 +1,19 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { Users, UserPlus, Shield, KeyRound, Pencil, Trash2, Plus, X, Copy, Check, Power, ChevronDown, ChevronRight, Fingerprint } from 'lucide-react';
 import client from '../api/client';
 import { PageHeader, Badge, LastUpdated } from '../components/ui/primitives';
 import { useTableControls, TableSearch, TablePager } from '../components/ui/tableTools';
 import { useToast } from '../components/ui/Toaster';
 import { useAuth } from '../auth/AuthContext';
-import { usePlatforms } from '../platforms/PlatformsContext';
 import AdminNav from '../components/AdminNav';
 import IdentityProvidersTab from './IdentityProvidersTab';
 import ProviderBadge from '../components/idp/ProviderBadge';
 import { copyText } from '../utils/clipboard';
 import SettingsTabs, { useSettingsTab } from '../components/settings/SettingsTabs';
+import GrantEditor from '../components/access/GrantEditor';
+import { PermissionChip, useGrantCatalog } from '../components/access/PermissionParts';
 
 const inputClass = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none';
-const LEVELS = ['view', 'manage', '*'];
 
 const TABS = [
   { key: 'users', label: 'Users', icon: Users },
@@ -44,173 +44,6 @@ function Modal({ title, onClose, children, wide }) {
         <div className="px-5 py-4 overflow-y-auto">{children}</div>
       </div>
     </div>
-  );
-}
-
-/* ── Platform access matrix: one row per platform, None/View/Manage.
- *    Writes plain `<ns>:*:<level>` grants — same storage, friendlier editing.
- *    Rows come from the platform registry so new platforms appear on their own. ── */
-const MATRIX_LEVELS = [
-  { key: 'none', label: 'None' },
-  { key: 'view', label: 'View' },
-  { key: 'manage', label: 'Manage' },
-];
-
-// `<ns>:*:*` counts as manage for display — level '*' and 'manage' are
-// equivalent for everything the app enforces (view/manage only).
-function directLevel(grants, ns) {
-  if (grants.some(p => p === `${ns}:*:*` || p === `${ns}:*:manage`)) return 'manage';
-  if (grants.some(p => p === `${ns}:*:view`)) return 'view';
-  return 'none';
-}
-
-function PlatformAccessEditor({ grants, onAdd, onRemove }) {
-  const { platforms } = usePlatforms();
-  const [busy, setBusy] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-
-  const rows = [
-    { ns: '*', label: 'All platforms', hint: 'includes future platforms and administration' },
-    { ns: 'ops', label: 'Ops', hint: 'Ops Agent, Estate Advisor and Service Status analyses. Rollup pages need only a platform grant.' },
-    ...platforms.map(p => ({ ns: p.id, label: p.label, color: p.color })),
-    { ns: 'admin', label: 'Administration', hint: 'settings, users, plugins, licensing' },
-  ];
-  const globalLvl = directLevel(grants, '*');
-
-  // Grants the matrix can't express (section-scoped or unknown namespaces)
-  // live in the Advanced section as removable chips.
-  const matrixPerms = new Set(rows.flatMap(r => LEVELS.map(l => `${r.ns}:*:${l}`)));
-  const advancedGrants = grants.filter(p => !matrixPerms.has(p));
-
-  const setLevel = async (ns, level) => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      for (const lvl of LEVELS) {
-        const perm = `${ns}:*:${lvl}`;
-        if (grants.includes(perm) && perm !== `${ns}:*:${level}`) await onRemove(perm);
-      }
-      if (level !== 'none' && !grants.includes(`${ns}:*:${level}`)) await onAdd(`${ns}:*:${level}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="border border-cohesity-border rounded-lg overflow-hidden">
-        {rows.map((r, i) => {
-          const direct = directLevel(grants, r.ns);
-          const isGlobalRow = r.ns === '*';
-          // A platform row is covered by the all-platforms grant even at None.
-          const inherited = !isGlobalRow && direct === 'none' && globalLvl !== 'none' ? globalLvl : null;
-          const effective = inherited || direct;
-          return (
-            <div key={r.ns}
-              className={`flex items-center justify-between gap-3 px-3 py-2 ${i > 0 ? 'border-t border-cohesity-border' : ''} ${isGlobalRow ? 'bg-surface-overlay' : ''}`}>
-              <div className="min-w-0">
-                <p className="text-xs font-medium text-ink flex items-center gap-2">
-                  {r.color && <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: r.color }} />}
-                  {r.label}
-                  {inherited && <span className="text-[10px] font-normal text-ink-faint">via all-platforms</span>}
-                </p>
-                {r.hint && <p className="text-[10px] text-ink-faint mt-0.5">{r.hint}</p>}
-              </div>
-              <div className="flex rounded-lg border border-cohesity-border overflow-hidden flex-shrink-0">
-                {MATRIX_LEVELS.map(l => {
-                  const active = effective === l.key;
-                  const fromInherit = active && inherited;
-                  return (
-                    <button key={l.key} type="button" disabled={busy}
-                      onClick={() => setLevel(r.ns, l.key)}
-                      className={`px-2.5 py-1 text-[11px] font-medium transition-colors cursor-pointer disabled:opacity-50 ${
-                        active
-                          ? l.key === 'none'
-                            ? 'bg-surface-overlay text-ink'
-                            : fromInherit ? 'bg-brand/5 text-brand/70' : 'bg-brand/15 text-brand'
-                          : 'text-ink-faint hover:text-ink hover:bg-surface-overlay'
-                      }`}>
-                      {l.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div>
-        <button type="button" onClick={() => setShowAdvanced(o => !o)}
-          className="flex items-center gap-1 text-[11px] font-medium text-ink-faint hover:text-ink transition-colors cursor-pointer">
-          {showAdvanced ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          Advanced: section-scoped grants{advancedGrants.length > 0 ? ` (${advancedGrants.length})` : ''}
-        </button>
-        {showAdvanced && (
-          <div className="mt-2 flex flex-col gap-2">
-            <div className="flex flex-wrap gap-1.5">
-              {advancedGrants.length === 0 && <p className="text-[11px] text-ink-faint">No section-scoped grants.</p>}
-              {advancedGrants.map(p => <PermissionChip key={p} perm={p} onRemove={() => onRemove(p)} />)}
-            </div>
-            <PermissionBuilder onAdd={onAdd} namespaces={rows.map(r => r.ns)} />
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ── Permission string builder row: namespace / section / level → ns:section:level ── */
-function PermissionBuilder({ onAdd, namespaces }) {
-  const [namespace, setNamespace] = useState('cohesity');
-  const [section, setSection] = useState('*');
-  const [level, setLevel] = useState('view');
-
-  const add = () => {
-    const sec = (section || '*').trim() || '*';
-    onAdd(`${namespace}:${sec}:${level}`);
-    setSection('*');
-  };
-
-  return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-end gap-1.5 flex-wrap">
-        <div>
-          <label className="text-[10px] font-medium text-ink-faint uppercase tracking-wider mb-0.5 block">Platform</label>
-          <select value={namespace} onChange={e => setNamespace(e.target.value)} className={`${inputClass} w-auto`}>
-            {namespaces.map(n => <option key={n} value={n}>{n === '*' ? '* (all)' : n}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="text-[10px] font-medium text-ink-faint uppercase tracking-wider mb-0.5 block">Section</label>
-          <input value={section} onChange={e => setSection(e.target.value)} placeholder="*" title="Section within the platform (e.g. alerts, settings). Use * for all sections." className={`${inputClass} w-24`} />
-        </div>
-        <div>
-          <label className="text-[10px] font-medium text-ink-faint uppercase tracking-wider mb-0.5 block">Access level</label>
-          <select value={level} onChange={e => setLevel(e.target.value)} className={`${inputClass} w-auto`}>
-            {LEVELS.map(l => <option key={l} value={l}>{l}</option>)}
-          </select>
-        </div>
-        <button onClick={add} type="button"
-          className="flex items-center gap-1 text-[11px] font-medium px-2.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors cursor-pointer">
-          <Plus size={12} /> Add
-        </button>
-      </div>
-      <p className="text-[10px] text-ink-faint">Section is the API area within a platform (e.g. clusters, alerts, settings) — use * for all. Manage includes view.</p>
-    </div>
-  );
-}
-
-function PermissionChip({ perm, onRemove }) {
-  return (
-    <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted font-mono">
-      {perm}
-      {onRemove && (
-        <button onClick={onRemove} aria-label={`Remove ${perm}`} className="ml-1 text-ink-faint hover:text-status-crit cursor-pointer">
-          <X size={10} />
-        </button>
-      )}
-    </span>
   );
 }
 
@@ -693,6 +526,18 @@ function CreateGroupModal({ onClose, onSaved }) {
   );
 }
 
+// Short grey line under each group name, from the grants GET /users/groups returns.
+function grantSummary(list) {
+  if (!Array.isArray(list)) return '';
+  const perms = list.map(g => (typeof g === 'string' ? g : g?.permission)).filter(Boolean);
+  if (perms.length === 0) return 'No grants';
+  const star = perms.find(p => p.startsWith('*:*:'));
+  if (star) return `All platforms: ${star.endsWith(':view') ? 'view' : 'manage'}`;
+  const ns = new Set(perms.map(p => p.split(':')[0]).filter(n => n !== 'admin' && n !== 'ops'));
+  if (ns.size > 0) return `${ns.size} ${ns.size === 1 ? 'platform' : 'platforms'}`;
+  return `${perms.length} ${perms.length === 1 ? 'grant' : 'grants'}`;
+}
+
 function GroupsTab() {
   const { toast } = useToast();
   const [groups, setGroups] = useState(null);
@@ -701,6 +546,9 @@ function GroupsTab() {
   const [grants, setGrants] = useState(null);
   const [grantsError, setGrantsError] = useState(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [savingGrants, setSavingGrants] = useState(false);
+  const grantsDirty = useRef(false);
+  const { catalog, error: catalogError } = useGrantCatalog();
   const idpProviders = useIdpProviders();
 
   const load = useCallback(() => {
@@ -728,24 +576,37 @@ function GroupsTab() {
 
   const selected = (groups || []).find(g => g.id === selectedId);
 
-  const addGrant = async (permission) => {
+  const saveGrants = async (next) => {
     if (!selectedId) return;
+    setSavingGrants(true);
     try {
-      await client.post('/users/grants', { subjectType: 'group', subjectId: selectedId, permission });
+      await client.put(`/users/grants/group/${selectedId}`, { permissions: next });
+      toast({ type: 'success', title: 'Grants saved' });
+      grantsDirty.current = false;
       loadGrants(selectedId);
+      load();
     } catch (err) {
-      toast({ type: 'error', title: 'Could not add grant', message: errorMessage(err, 'Invalid permission string.') });
+      toast({ type: 'error', title: 'Could not save grants', message: errorMessage(err, 'Invalid permission string.') });
+    } finally {
+      setSavingGrants(false);
     }
   };
 
-  const removeGrant = async (permission) => {
-    if (!selectedId) return;
+  const copyFromGroup = async (id) => {
     try {
-      await client.delete('/users/grants', { data: { subjectType: 'group', subjectId: selectedId, permission } });
-      loadGrants(selectedId);
+      const { data } = await client.get('/users/grants', { params: { subjectType: 'group', subjectId: id } });
+      return (data || []).map(g => (typeof g === 'string' ? g : g.permission));
     } catch (err) {
-      toast({ type: 'error', title: 'Could not remove grant', message: errorMessage(err, '') });
+      toast({ type: 'error', title: 'Could not load that group', message: errorMessage(err, '') });
+      return null;
     }
+  };
+
+  const selectGroup = (id) => {
+    if (id === selectedId) return;
+    if (grantsDirty.current && !window.confirm('Discard unsaved grant changes?')) return;
+    grantsDirty.current = false;
+    setSelectedId(id);
   };
 
   const deleteGroup = async (g) => {
@@ -772,11 +633,14 @@ function GroupsTab() {
         </button>
         <div className="panel p-1 flex flex-col gap-0.5">
           {groups.map(g => (
-            <button key={g.id} onClick={() => setSelectedId(g.id)}
+            <button key={g.id} onClick={() => selectGroup(g.id)}
               className={`flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg text-left text-xs transition-colors cursor-pointer ${
                 selectedId === g.id ? 'bg-brand/10 text-brand' : 'text-ink-muted hover:bg-surface-overlay hover:text-ink'
               }`}>
-              <span className="truncate">{g.name}</span>
+              <span className="min-w-0">
+                <span className="block truncate">{g.name}</span>
+                <span className="block truncate text-[10px] text-ink-faint">{grantSummary(g.grants)}</span>
+              </span>
               {g.isSystem === 1 || g.isSystem === true ? <Badge tone="neutral">system</Badge> : g.provider === 'ad' ? <Badge tone="info">AD</Badge> : g.provider === 'idp' ? <ProviderBadge providerId={g.idpProviderId} providers={idpProviders} /> : null}
             </button>
           ))}
@@ -809,11 +673,15 @@ function GroupsTab() {
 
             <div>
               <p className="text-xs font-semibold text-ink mb-2">Grants</p>
+              {catalogError && <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2 mb-2">{catalogError}</p>}
               {grantsError && <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2 mb-2">{grantsError}</p>}
               {grants === null ? (
                 <p className="text-[11px] text-ink-faint">Loading…</p>
               ) : (
-                <PlatformAccessEditor grants={grants} onAdd={addGrant} onRemove={removeGrant} />
+                <GrantEditor key={selectedId} grants={grants} catalog={catalog} saving={savingGrants}
+                  onSave={saveGrants} onDirtyChange={(d) => { grantsDirty.current = d; }}
+                  copySources={groups.filter(g => g.id !== selectedId).map(g => ({ id: g.id, name: g.name }))}
+                  onCopyFrom={copyFromGroup} />
               )}
             </div>
           </div>
@@ -834,8 +702,7 @@ function CreateServiceAccountModal({ onClose, onSaved }) {
   const [issuedKey, setIssuedKey] = useState(null);
   const [copied, setCopied] = useState(false);
 
-  const addPermission = (p) => setPermissions(prev => prev.includes(p) ? prev : [...prev, p]);
-  const removePermission = (p) => setPermissions(prev => prev.filter(x => x !== p));
+  const { catalog } = useGrantCatalog();
 
   const save = async () => {
     setError(null);
@@ -893,7 +760,7 @@ function CreateServiceAccountModal({ onClose, onSaved }) {
         </div>
         <div>
           <label className="text-xs font-semibold text-ink mb-1.5 block">Permissions</label>
-          <PlatformAccessEditor grants={permissions} onAdd={addPermission} onRemove={removePermission} />
+          <GrantEditor grants={permissions} catalog={catalog} onSave={setPermissions} live />
         </div>
         {error && <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2">{error}</p>}
         <button onClick={save} disabled={saving || !name.trim() || permissions.length === 0}

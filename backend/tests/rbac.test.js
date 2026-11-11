@@ -37,7 +37,8 @@ describe('matches', () => {
 
     it('all wildcards (full admin grant)', () => {
       expect(matches('*:*:*', 'cohesity:clusters:view')).toBe(true);
-      expect(matches('*:*:*', 'admin:users:manage')).toBe(true);
+      expect(matches('*:*:*', 'admin:users:manage')).toBe(false); // rule A: wildcard excludes admin
+      expect(matches('*:*:*', 'pure:alerts:manage')).toBe(true);
     });
 
     it('combinations of two wildcards', () => {
@@ -203,5 +204,21 @@ describe('resolveGrants (real temp DB)', () => {
     expect(hasPermission(grants, 'admin:settings:view')).toBe(true);
     expect(hasPermission(grants, 'admin:settings:manage')).toBe(false);
     expect(hasPermission(grants, 'pure:clusters:view')).toBe(false);
+  });
+});
+
+describe('wildcard namespace excludes admin (grants editor rule A)', () => {
+  it('*:*:view does not satisfy admin:settings:view', () => {
+    expect(matches('*:*:view', 'admin:settings:view')).toBe(false);
+  });
+  it('*:*:* does not satisfy admin:users:manage', () => {
+    expect(matches('*:*:*', 'admin:users:manage')).toBe(false);
+  });
+  it('admin:*:view satisfies admin:settings:view', () => {
+    expect(matches('admin:*:view', 'admin:settings:view')).toBe(true);
+  });
+  it('*:*:view still satisfies ops:*:view and pure:x:view', () => {
+    expect(matches('*:*:view', 'ops:*:view')).toBe(true);
+    expect(matches('*:*:view', 'pure:x:view')).toBe(true);
   });
 });

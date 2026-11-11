@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const db = require('../db/adminDb');
 const { validateSession, authEnabled, anonymousAuth } = require('../services/authService');
 const { getLicenseStatus } = require('../services/license');
-const { hasPermission } = require('../services/rbac');
+const { hasPermission, ALL_ACCESS } = require('../services/rbac');
 
 function parseCookie(header, name) {
   if (!header) return null;
@@ -36,7 +36,7 @@ function authenticateFromRequest(req) {
   if (apiKey) {
     const expected = process.env.DASHBOARD_API_KEY;
     if (expected && timingSafeEqualStr(apiKey, expected)) {
-      return { kind: 'service', name: 'legacy-env-key', grants: ['*:*:*'] };
+      return { kind: 'service', name: 'legacy-env-key', grants: ALL_ACCESS.slice() };
     }
 
     const keyHash = crypto.createHash('sha256').update(apiKey).digest('hex');
