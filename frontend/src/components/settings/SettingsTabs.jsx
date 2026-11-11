@@ -25,9 +25,10 @@ export default function SettingsTabs({ tabs, active, onChange, label = 'Settings
         const on = t.key === active;
         return (
           <button key={t.key} role="tab" aria-selected={on} onClick={() => onChange(t.key)}
-            className={`flex items-center gap-1.5 whitespace-nowrap px-3 py-2 -mb-px text-xs font-medium border-b-2 transition-colors cursor-pointer ${
-              on ? 'border-brand text-ink' : 'border-transparent text-ink-muted hover:text-ink'}`}
-            style={{ borderTop: 'none', borderLeft: 'none', borderRight: 'none', background: 'none' }}>
+            className={`flex items-center gap-1.5 whitespace-nowrap px-3 py-2 -mb-px text-xs font-medium rounded-t-lg border border-b-0 border-t-2 transition-colors cursor-pointer ${
+              on
+                ? 'border-cohesity-border border-t-brand bg-surface-base text-ink'
+                : 'border-cohesity-border/60 border-t-transparent bg-surface-overlay/40 text-ink-muted hover:text-ink hover:bg-surface-overlay hover:border-cohesity-border'}`}>
             {Icon && <Icon size={13} className={on ? 'text-brand' : 'text-ink-faint'} />}
             {t.label}
             {t.dirty && <span className="h-1.5 w-1.5 rounded-full bg-amber-400" title="Unsaved changes" />}
