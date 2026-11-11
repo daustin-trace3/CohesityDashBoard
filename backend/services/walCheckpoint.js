@@ -39,7 +39,10 @@ function startWalCheckpoint({ everyMs = 5 * 60000, truncateAboveBytes = 64 * 102
       const db = require('../db/database');
       const res = checkpointOnce(db, db.name, { truncateAboveBytes });
       const line = `[db] wal checkpoint ${res.mode} database: wal ${mb(res.walBytesBefore)} MB -> ${mb(res.walBytesAfter)} MB, busy ${res.busy}`;
-      if (res.mode === 'truncate' || res.busy) logger.info(line); else logger.debug(line);
+      if (res.mode === 'truncate' && res.walBytesAfter > truncateAboveBytes) {
+        // A reader held a transaction open for the whole attempt, so the log could not be reset.
+        logger.warn(`${line}; a reader is holding the log open (a long query in either process, or a snapshot)`);
+      } else if (res.mode === 'truncate' || res.busy) logger.info(line); else logger.debug(line);
       // Last run, for the System Health page.
       setSetting('icc_wal_checkpoint_last', JSON.stringify({ at: new Date().toISOString(), mode: res.mode, beforeMb: mb(res.walBytesBefore), afterMb: mb(res.walBytesAfter), busy: res.busy }));
     } catch (err) {

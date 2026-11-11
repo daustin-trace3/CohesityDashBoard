@@ -13,6 +13,9 @@ const SWEEP_FIRST_MS = 10 * 60000;
 const SWEEP_TICK_MS = 30000;
 const SNAPSHOT_EVERY_MS = 6 * 3600000;
 const PRUNE_EVERY_MS = 60 * 60000;
+/** A snapshot never starts while the data file's write-ahead log is larger than this. */
+const SNAPSHOT_WAL_MAX_BYTES = 256 * 1024 * 1024;
+const SNAPSHOT_SWITCH_KEY = 'icc_health_snapshot_enabled';
 const RUN_KEEP_DAYS = 7;
 /** The web route computes a missing snapshot inline only below this file size. */
 const INLINE_MAX_BYTES = 256 * 1024 * 1024;
@@ -119,6 +122,14 @@ function fileBytes(p) {
 // connection; the main thread only stores the result. The worker receives the
 // function as source text because the compiled build cannot read a function's
 // source at runtime, so the main-thread copy is built from the same text.
+//
+// It reads one b-tree per statement, never the whole file in one statement.
+// A single "SELECT ... FROM dbstat GROUP BY name" is one read transaction that
+// lasts as long as the walk, and while any reader holds a transaction SQLite
+// cannot recycle the write-ahead log: on the 12.7 GB production file that walk
+// ran for the better part of an hour and the -wal file grew past 6 GB
+// (2026-11-11). One statement per table or index releases the read lock between
+// b-trees, so the checkpoint task can reset the log in the gaps.
 const SNAPSHOT_SRC = `function dbSnapshot(db, dbPath, fs) {
   const t0 = Date.now();
   const file = dbPath || db.name;
@@ -130,18 +141,27 @@ const SNAPSHOT_SRC = `function dbSnapshot(db, dbPath, fs) {
   const bytes = new Map();
   const indexBytes = new Map();
   let dbstatError = null;
+  // One short statement per b-tree. The aggregate form (SQLite 3.30+) sums the
+  // pages inside dbstat; older builds fall back to SUM over the per-page rows.
+  let sizeStmt = null;
   try {
-    for (const r of db.prepare('SELECT name, SUM(pgsize) AS bytes FROM dbstat GROUP BY name').all()) {
-      if (tableNames.has(r.name)) bytes.set(r.name, (bytes.get(r.name) || 0) + r.bytes);
-      else if (indexOwner.has(r.name)) {
-        const owner = indexOwner.get(r.name);
-        indexBytes.set(owner, (indexBytes.get(owner) || 0) + r.bytes);
-      } else if (r.name === 'sqlite_master' || r.name === 'sqlite_schema') {
-        bytes.set('sqlite_master', (bytes.get('sqlite_master') || 0) + r.bytes);
-      }
-    }
+    sizeStmt = db.prepare('SELECT pgsize AS bytes FROM dbstat WHERE name = ? AND aggregate = 1');
+    sizeStmt.get('sqlite_master');
   } catch (err) {
-    dbstatError = err.message;
+    try { sizeStmt = db.prepare('SELECT SUM(pgsize) AS bytes FROM dbstat WHERE name = ?'); } catch (err2) { sizeStmt = null; dbstatError = err2.message; }
+  }
+  if (sizeStmt) {
+    try {
+      const sizeOf = (name) => { const r = sizeStmt.get(name); return r && r.bytes ? Number(r.bytes) : 0; };
+      for (const m of master) {
+        if (m.type === 'table') bytes.set(m.name, (bytes.get(m.name) || 0) + sizeOf(m.name));
+        else indexBytes.set(m.tbl_name, (indexBytes.get(m.tbl_name) || 0) + sizeOf(m.name));
+      }
+      const schemaBytes = sizeOf('sqlite_master') || sizeOf('sqlite_schema');
+      if (schemaBytes) bytes.set('sqlite_master', schemaBytes);
+    } catch (err) {
+      dbstatError = err.message;
+    }
   }
   if (bytes.has('sqlite_master')) tableNames.add('sqlite_master');
 
@@ -296,6 +316,27 @@ let first = null;
 const lastSnapshotAt = new Map();
 const inflight = new Map();
 let lastPruneAt = 0;
+const deferredLogAt = new Map();
+
+/** Why a snapshot of this database must not start now, or null when it may.
+ *  Even one statement per b-tree pins the log for the largest table, so a
+ *  snapshot waits for a quiet moment: no poll in flight, a small write-ahead
+ *  log, and the switch on (setting icc_health_snapshot_enabled, or the
+ *  environment variable ICC_HEALTH_SNAPSHOT=0 for a box with no UI access). */
+function snapshotHold(db, opts = {}) {
+  const { getSetting } = require('./settings');
+  if (process.env.ICC_HEALTH_SNAPSHOT === '0') return 'switched off by ICC_HEALTH_SNAPSHOT=0';
+  try { if (String(getSetting(SNAPSHOT_SWITCH_KEY) || '') === '0') return `switched off (${SNAPSHOT_SWITCH_KEY})`; } catch { /* no settings table yet */ }
+  const polling = opts.polling || pollingStats();
+  if (polling.active > 0) return `${polling.active} poll${polling.active === 1 ? '' : 's'} in flight`;
+  const walMax = opts.walMaxBytes != null ? opts.walMaxBytes : SNAPSHOT_WAL_MAX_BYTES;
+  const file = db && db.name;
+  if (file && file !== ':memory:') {
+    const wal = fileBytes(`${file}-wal`);
+    if (wal > walMax) return `write-ahead log is ${mb(wal)} MB`;
+  }
+  return null;
+}
 
 function snapshotFor(db, key, requested, tenantId) {
   const { setSetting } = require('./settings');
@@ -325,6 +366,15 @@ function sweepTick() {
       try {
         const requested = !!getSetting(REFRESH_KEY);
         if ((requested || now - (lastSnapshotAt.get(key) || 0) >= SNAPSHOT_EVERY_MS) && !inflight.has(key)) {
+          const hold = snapshotHold(db);
+          if (hold) {
+            // Try again next tick; say so once an hour per database.
+            if (now - (deferredLogAt.get(key) || 0) >= 3600000) {
+              deferredLogAt.set(key, now);
+              logger.info(`[health] db snapshot${tenantId ? ` for tenant ${tenantId}` : ''} deferred: ${hold}`);
+            }
+            return;
+          }
           lastSnapshotAt.set(key, now);
           jobs.push(snapshotFor(db, key, requested, tenantId));
         }
@@ -359,6 +409,6 @@ function stopSweep() {
 module.exports = {
   recordPollRun, pruneRuns, processSample, memSample, logSummary, dbCounters, pollingStats,
   readLoopLagP99Ms, webLoopLagP99Ms, dbSnapshot, adminFileOf, readSnapshot, storeSnapshot, fileBytes,
-  startSweep, stopSweep, sweepTick,
-  SNAPSHOT_KEY, REFRESH_KEY, INLINE_MAX_BYTES,
+  startSweep, stopSweep, sweepTick, snapshotHold,
+  SNAPSHOT_KEY, REFRESH_KEY, INLINE_MAX_BYTES, SNAPSHOT_WAL_MAX_BYTES, SNAPSHOT_SWITCH_KEY,
 };
