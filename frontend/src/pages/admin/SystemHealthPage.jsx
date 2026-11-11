@@ -149,7 +149,7 @@ function Overview({ data }) {
             <p className="text-[13px] text-ink-muted">No poll runs recorded yet.</p>
           ) : (
             <table className="w-full text-[13px]">
-              <thead><tr className={thCls}><th className="text-left py-1.5 pr-3">Source</th><th className="text-right pr-3">Max</th><th className="text-right pr-3">Avg</th><th className="text-left">Trend</th></tr></thead>
+              <thead><tr className={thCls}><th className="text-left py-1.5 pr-3">Source</th><th className="text-right pr-3">Max</th><th className="text-right pr-3">Avg</th><th className="text-left">Perf Trend</th></tr></thead>
               <tbody>
                 {longest.map(s => (
                   <tr key={`${s.platform}-${s.sourceId}-${s.kind}`} className="border-b border-cohesity-border/40">
@@ -325,9 +325,9 @@ function PollingTab({ data }) {
                   <SortTh k="lastDurationMs" label="Last" ctl={ctl} align="right" />
                   <SortTh k="avgDurationMs" label="Avg 24 h" ctl={ctl} align="right" />
                   <SortTh k="maxDurationMs" label="Max 24 h" ctl={ctl} align="right" />
-                  <SortTh k="runs24h" label="Runs" ctl={ctl} align="right" />
-                  <SortTh k="failures24h" label="Failures" ctl={ctl} align="right" />
-                  <th className="text-left">Trend</th>
+                  <SortTh k="runs24h" label="Runs 24 h" ctl={ctl} align="right" />
+                  <SortTh k="failures24h" label="Failures 24 h" ctl={ctl} align="right" />
+                  <th className="text-left">Perf Trend</th>
                   <th className="text-left">Stale</th>
                 </tr></thead>
                 <tbody>
