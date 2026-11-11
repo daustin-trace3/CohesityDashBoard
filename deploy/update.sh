@@ -54,7 +54,10 @@ fi
 #    It intentionally excludes .env, .env.local, node_modules and backend/data,
 #    so those on-disk files are never overwritten.
 log "Overlaying update from ${PKG}"
-tar -xzf "${PKG}" -C "${APP_DIR}"
+# Windows-built archives carry 0777/0666 modes; apply the umask instead so the
+# install isn't world-writable.
+umask 022
+tar --no-same-permissions -xzf "${PKG}" -C "${APP_DIR}"
 
 # Report whether a rebuilt frontend came with the package.
 if tar -tzf "${PKG}" | grep -q '^frontend/dist/'; then

@@ -11,7 +11,9 @@
     * frontend/dist (rebuilt; session/cookie auth so no baked key needed), and
     * the NEW PURE-JS backend runtime deps (fast-xml-parser, multer, nodemailer,
       yauzl + transitive closure) so offline prod never runs npm install.
-  It NEVER contains .env, .env.local, backend/data, or NATIVE modules
+  It NEVER contains .env, .env.local, backend/data, copilot-bridge (its key,
+  auth and TLS files stay on Windows), dev-only files (frontend sources, tests,
+  plugin-sdk, docs, *.md other than CHANGELOG.md), or NATIVE modules
   (better-sqlite3, argon2) - those must be compiled ON the RHEL target and are
   left as prod's own copies. The DB self-migrates (idempotently) on restart.
 
@@ -217,8 +219,21 @@ try {
   # 4. Collect files for the overlay (working tree, repo-relative paths).
   # ----------------------------------------------------------------------
   $excludeDirNames = @('node_modules', 'logs', '.git', '.agents', '.gstack')
-  $excludePaths    = @('backend/data')
-  $excludeGlobs    = @('.env', '.env.local', '*.db', '*.sqlite', '*.sqlite3')
+  # Only what prod runs is shipped: backend runtime code (backend/demo stays -
+  # routes require its fixtures), backend/plugins, frontend/dist, deploy/,
+  # CHANGELOG.md and package.json (both read by What's New). Dev tooling, tests,
+  # docs and the Windows-only copilot-bridge (holds its API key, GitHub auth and
+  # TLS private key) never leave this box.
+  $excludePaths    = @(
+    'backend/data', 'backend/tests', 'backend/vitest.config.mjs', 'backend/dbcheck.ps1',
+    'copilot-bridge', 'plugin-sdk', 'docs', 'scripts'
+  )
+  $excludeGlobs    = @(
+    '.env', '.env.local', '*.db', '*.sqlite', '*.sqlite3',
+    '.git*', '*.code-workspace', 'pm2*.config.js', '*-probe.json', '*.iccplugin',
+    '*.pfx', '*.pem', '*.key'
+  )
+  $keepLeaves      = @('CHANGELOG.md')
 
   function Test-Excluded {
     param([string]$RelPath)
@@ -232,9 +247,13 @@ try {
     $segments = $RelPath -split '[\\/]'
     foreach ($seg in $segments) { if ($excludeDirNames -contains $seg) { return $true } }
     foreach ($p in $excludePaths) { if ($n -eq $p -or $n.StartsWith("$p/")) { return $true } }
-    if (($n -eq 'frontend/dist' -or $n.StartsWith('frontend/dist/')) -and -not $frontendChanged) { return $true }
+    if ($n.StartsWith('frontend/')) {
+      # Prod serves the built bundle only; sources and build config stay here.
+      if (-not $n.StartsWith('frontend/dist/') -or -not $frontendChanged) { return $true }
+    }
     $leaf = Split-Path $RelPath -Leaf
     foreach ($g in $excludeGlobs) { if ($leaf -like $g) { return $true } }
+    if ($leaf -like '*.md' -and $keepLeaves -notcontains $leaf) { return $true }
     return $false
   }
 
@@ -243,6 +262,12 @@ try {
     if (-not (Test-Excluded $rel)) { ($rel -replace '\\', '/') }
   }
   if (-not $files -or $files.Count -eq 0) { throw 'No files matched for packaging.' }
+
+  $leaked = @($files | Where-Object {
+    $_ -notlike 'backend/node_modules/*' -and
+    ($_ -match '(^|/)\.bridge/' -or $_ -match '(^|/)\.env(\.local)?$' -or $_ -like 'backend/data/*' -or $_ -match '\.(pfx|pem|key)$')
+  })
+  if ($leaked.Count -gt 0) { throw ("Refusing to package secrets/data: " + ($leaked -join ', ')) }
 
   $depFileCount = @($files | Where-Object { $_ -like 'backend/node_modules/*' }).Count
 
