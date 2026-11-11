@@ -17,7 +17,7 @@ import { platforms as builtinPlatforms } from '../platforms/registry';
 import { usePlatforms } from '../platforms/PlatformsContext';
 import UserMenu from './UserMenu';
 import { useAuth } from '../auth/AuthContext';
-import { PlatformDropdown, PlatformRail, PlatformGrid, getSwitcherMode } from './PlatformSwitcher';
+import { PlatformDropdown, PlatformRail, PlatformGrid, getSwitcherMode, SWITCHER_MODES } from './PlatformSwitcher';
 import { useAiEnabled } from '../api/useAiEnabled';
 import { useLmServices } from '../api/useLmServices';
 
@@ -197,6 +197,19 @@ export default function Layout() {
   };
 
   const { user, logout, hasPermission, loading: authLoading } = useAuth();
+  // The signed-in user's saved style wins over localStorage; mirror it locally so
+  // the next pre-login paint matches.
+  const savedSwitcherMode = user?.preferences?.switcherMode;
+  useEffect(() => {
+    if (!SWITCHER_MODES.some(m => m.id === savedSwitcherMode)) return;
+    try { localStorage.setItem('platform-switcher-mode', savedSwitcherMode); } catch { /* ignore */ }
+    setSwitcherMode(cur => {
+      if (cur === savedSwitcherMode) return cur;
+      window.dispatchEvent(new Event('switcher-mode-changed'));
+      return savedSwitcherMode;
+    });
+  }, [savedSwitcherMode]);
+
   const aiEnabled = useAiEnabled();
 
   // LogicMonitor pages that exist only for a metric family (Voice, Zscaler, Identity

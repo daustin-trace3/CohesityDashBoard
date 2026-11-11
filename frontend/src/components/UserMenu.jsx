@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { ChevronDown, Check, KeyRound, LogOut } from 'lucide-react';
-import { SWITCHER_MODES, getSwitcherMode } from './PlatformSwitcher';
+import client from '../api/client';
+import { SWITCHER_MODES, getSwitcherMode, saveSwitcherMode } from './PlatformSwitcher';
 
 const PROVIDER_LABELS = {
   local: 'Local account',
@@ -45,9 +46,8 @@ export default function UserMenu({ user, logout }) {
 
   const provider = user.authProvider || 'local';
   const pickMode = (id) => {
-    try { localStorage.setItem('platform-switcher-mode', id); } catch { /* ignore */ }
     setMode(id);
-    window.dispatchEvent(new Event('switcher-mode-changed'));
+    saveSwitcherMode(id, client, user);
   };
   const itemClass = 'w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-[12px] text-ink-muted hover:bg-surface-overlay hover:text-ink transition-colors cursor-pointer';
 

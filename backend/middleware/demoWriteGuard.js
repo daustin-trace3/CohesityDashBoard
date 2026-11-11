@@ -13,6 +13,7 @@ const { isDemo } = require('../services/demoMode');
 // stripped the /t/<tenant> prefix, so req.path here is tenant-free.
 const WRITE_ALLOW = [
   /^\/auth\/(login|logout)$/,          // signing in and out
+  /^\/auth\/preferences$/,             // saved UI preferences (switcher style)
   /^\/app-services(\/|$)/,             // watch list, re-evaluate, catalog import
   /^\/ops-agent(\/|$)/,                // run now, retriage, resolve
   /^\/service-status(\/|$)/,           // per-alert analyze

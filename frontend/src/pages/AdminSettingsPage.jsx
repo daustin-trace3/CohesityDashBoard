@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useSearchParams, Link, Navigate } from 'react-router-dom';
 import { Layers, KeyRound, Settings, Mail, SlidersHorizontal, Database, Gauge, Server, Filter, FileKey } from 'lucide-react';
 import client from '../api/client';
+import { useAuth } from '../auth/AuthContext';
 import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import AdminNav from '../components/AdminNav';
@@ -10,7 +11,7 @@ import SettingsTabs, { useSettingsTab } from '../components/settings/SettingsTab
 import { RetentionGlobalGroup } from '../components/settings/RetentionControls';
 import IntelligenceSettingsPage from './IntelligenceSettingsPage';
 import SystemHealthPage from './admin/SystemHealthPage';
-import { SWITCHER_MODES, getSwitcherMode } from '../components/PlatformSwitcher';
+import { SWITCHER_MODES, getSwitcherMode, saveSwitcherMode } from '../components/PlatformSwitcher';
 
 // Sections rendered by this page; Users & Access and Plugins are their own
 // routed pages sharing the same AdminNav shell.
@@ -38,6 +39,7 @@ const NOTIFY_PLATFORMS = [
 ];
 
 export default function AdminSettingsPage() {
+  const { user } = useAuth();
   const { section } = useParams();
   const [params] = useSearchParams();
   const intelAlias = section === undefined ? (params.get('tab') || 'provider') : INTEL_ALIASES[section];
@@ -291,7 +293,7 @@ export default function AdminSettingsPage() {
             <div className="pt-2 border-t border-cohesity-border/60">
               <p className="text-xs font-semibold text-ink mb-1 mt-2">Platform switcher style</p>
               <p className="text-[11px] text-ink-muted mb-2 leading-relaxed">
-                How the platform selector is presented. Saved per browser.
+                How the platform selector is presented. Saved to your account.
               </p>
               <div className="flex flex-col gap-1.5">
                 {SWITCHER_MODES.map(m => (
@@ -299,9 +301,8 @@ export default function AdminSettingsPage() {
                     <input type="radio" name="switcher-mode" className="accent-brand cursor-pointer"
                       checked={switcherMode === m.id}
                       onChange={() => {
-                        localStorage.setItem('platform-switcher-mode', m.id);
                         setSwitcherModeState(m.id);
-                        window.dispatchEvent(new Event('switcher-mode-changed'));
+                        saveSwitcherMode(m.id, client, user);
                       }} />
                     <span className="text-xs text-ink-muted">{m.label}</span>
                   </label>

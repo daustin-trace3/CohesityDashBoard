@@ -41,6 +41,24 @@ export function getSwitcherMode() {
   return 'rail';
 }
 
+/**
+ * Save the switcher style: localStorage first (so the pre-auth paint matches
+ * next time), the shared event for the open Layout, then the signed-in user's
+ * server-side preference. A failed PUT keeps the local change. `user` is the
+ * session user; open access (no user id) stays local only.
+ */
+export function saveSwitcherMode(mode, api, user) {
+  try { localStorage.setItem('platform-switcher-mode', mode); } catch { /* ignore */ }
+  window.dispatchEvent(new Event('switcher-mode-changed'));
+  if (!user || user.id == null || !api) return Promise.resolve();
+  return Promise.resolve(api.put('/auth/preferences', { switcherMode: mode }))
+    .then((res) => {
+      const preferences = res && res.data && res.data.preferences;
+      if (preferences) window.dispatchEvent(new CustomEvent('user-preferences-saved', { detail: preferences }));
+    })
+    .catch((err) => { console.warn('Could not save the switcher style to the server:', err && err.message ? err.message : err); });
+}
+
 /** Rolled-up health for one platform from the /poller/status payload. */
 export function platformHealth(status, id) {
   const p = status?.[id];

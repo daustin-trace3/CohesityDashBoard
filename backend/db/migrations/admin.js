@@ -68,4 +68,17 @@ module.exports = [
       logger.info(`[admin-migrations] v1: copied ${copied} wildcard grant(s) to admin:, expanded ${expanded} service account(s), seeded ${seeded} system group wildcard(s)`);
     },
   },
+
+  // v2 (2026-11-11): per-user UI preferences (platform switcher style), saved
+  // server side so a user sees the same view on every browser.
+  {
+    version: 2,
+    up(db) {
+      db.exec(`CREATE TABLE IF NOT EXISTS user_preferences (
+        user_id INTEGER PRIMARY KEY,
+        prefs_json TEXT NOT NULL DEFAULT '{}',
+        updated_at TEXT NOT NULL
+      )`);
+    },
+  },
 ];

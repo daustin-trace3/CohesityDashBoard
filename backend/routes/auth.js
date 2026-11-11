@@ -19,6 +19,7 @@ const {
 } = require('../services/authService');
 const { resolveGrants, hasPermission, ALL_ACCESS } = require('../services/rbac');
 const { setSetting } = require('../services/settings');
+const userPreferences = require('../services/userPreferences');
 
 const router = express.Router();
 
@@ -76,6 +77,7 @@ function userPayload(user, grants) {
     displayName: user.displayName !== undefined ? user.displayName : user.display_name,
     permissions: grants,
     authProvider: user.authProvider !== undefined ? user.authProvider : (user.auth_provider || 'local'),
+    preferences: userPreferences.getPreferences(user.id),
   };
 }
 
@@ -197,6 +199,30 @@ router.post('/change-password', authLimiter, async (req, res, next) => {
       .run(await hashPassword(String(newPassword)), new Date().toISOString(), user.id);
     logger.info(`[auth] password changed user=${user.username}`);
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET /api/auth/preferences - the signed-in user's saved UI preferences. */
+router.get('/preferences', (req, res) => {
+  const sessionId = parseCookie(req.headers.cookie, COOKIE_NAME);
+  const session = sessionId ? validateSession(sessionId) : null;
+  if (!session) return res.status(401).json({ error: 'unauthorized' });
+  res.json({ preferences: userPreferences.getPreferences(session.user.id) });
+});
+
+/** PUT /api/auth/preferences { switcherMode } - session and CSRF checked inline
+ *  (this router is auth-exempt). */
+router.put('/preferences', (req, res, next) => {
+  try {
+    const sessionId = parseCookie(req.headers.cookie, COOKIE_NAME);
+    const session = sessionId ? validateSession(sessionId) : null;
+    if (!session) return res.status(401).json({ error: 'unauthorized' });
+    if (req.headers['x-csrf-token'] !== session.csrfToken) return res.status(403).json({ error: 'csrf' });
+    const bad = userPreferences.validatePatch(req.body);
+    if (bad) return res.status(400).json({ error: bad });
+    res.json({ preferences: userPreferences.setPreferences(session.user.id, req.body) });
   } catch (err) {
     next(err);
   }

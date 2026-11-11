@@ -21,14 +21,14 @@ const ADMIN_TABLES = [
   'users', 'groups', 'user_groups', 'role_grants', 'auth_sessions', 'service_accounts',
   'app_settings', 'plugins', 'user_dashboards', 'directory_sync_log',
   'idp_providers', 'idp_auth_state', 'idp_seen_assertions', 'idp_sync_log',
-  'tenant_audit',
+  'tenant_audit', 'user_preferences',
 ];
 
 // Child-first drop order.
 const DROP_ORDER = [
   'user_groups', 'role_grants', 'auth_sessions', 'idp_auth_state', 'idp_seen_assertions',
   'idp_sync_log', 'directory_sync_log', 'idp_providers', 'service_accounts', 'user_dashboards',
-  'plugins', 'app_settings', 'tenant_audit', 'groups', 'users',
+  'plugins', 'app_settings', 'tenant_audit', 'user_preferences', 'groups', 'users',
 ];
 
 function adminPathFor(dataPath) {

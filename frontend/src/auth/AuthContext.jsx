@@ -31,6 +31,14 @@ export function AuthProvider({ children }) {
     loadSession().finally(() => setLoading(false));
   }, [loadSession]);
 
+  // A saved preference (see saveSwitcherMode) keeps the session user current,
+  // so a remounted Layout never re-applies a stale server value.
+  useEffect(() => {
+    const onSaved = (e) => setUser((u) => (u && u.id != null ? { ...u, preferences: e.detail || {} } : u));
+    window.addEventListener('user-preferences-saved', onSaved);
+    return () => window.removeEventListener('user-preferences-saved', onSaved);
+  }, []);
+
   const login = useCallback(async (username, password) => {
     await client.post('/auth/login', { username, password });
     return loadSession();

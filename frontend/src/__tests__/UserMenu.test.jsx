@@ -2,6 +2,9 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import UserMenu from '../components/UserMenu';
+import client from '../api/client';
+
+vi.mock('../api/client', () => ({ default: { put: vi.fn(() => Promise.resolve({ data: { preferences: {} } })), get: vi.fn(), post: vi.fn() } }));
 
 function setup(user, logout = vi.fn()) {
   render(
@@ -14,7 +17,7 @@ function setup(user, logout = vi.fn()) {
 const local = { id: 1, username: 'doug', displayName: 'Doug A', authProvider: 'local' };
 
 describe('UserMenu', () => {
-  beforeEach(() => { localStorage.clear(); });
+  beforeEach(() => { localStorage.clear(); client.put.mockClear(); });
 
   it('renders the name and opens on click', () => {
     setup(local);
@@ -44,8 +47,15 @@ describe('UserMenu', () => {
     fireEvent.click(screen.getByText('Grid launcher'));
     expect(localStorage.getItem('platform-switcher-mode')).toBe('grid');
     expect(handler).toHaveBeenCalled();
+    expect(client.put).toHaveBeenCalledWith('/auth/preferences', { switcherMode: 'grid' });
     expect(screen.getByRole('menu')).toBeTruthy();
     window.removeEventListener('switcher-mode-changed', handler);
+  });
+
+  it('open access (no user id) renders no menu and saves nothing', () => {
+    setup({ id: null, username: 'anonymous', displayName: 'Open access' });
+    expect(screen.queryByRole('button', { name: /Open access/ })).toBeNull();
+    expect(client.put).not.toHaveBeenCalled();
   });
 
   it('Sign out calls logout and Escape closes', () => {
