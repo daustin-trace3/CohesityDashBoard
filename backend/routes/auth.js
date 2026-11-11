@@ -75,6 +75,7 @@ function userPayload(user, grants) {
     username: user.username,
     displayName: user.displayName !== undefined ? user.displayName : user.display_name,
     permissions: grants,
+    authProvider: user.authProvider !== undefined ? user.authProvider : (user.auth_provider || 'local'),
   };
 }
 
@@ -167,6 +168,35 @@ router.post('/login', authLimiter, async (req, res, next) => {
 
     const { grants } = finishLogin(req, res, user);
     res.json({ user: userPayload(user, grants) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /api/auth/change-password { currentPassword, newPassword } - local
+ *  accounts only. The /api/auth router is auth-exempt, so the session and
+ *  CSRF checks are inline. */
+router.post('/change-password', authLimiter, async (req, res, next) => {
+  try {
+    const sessionId = parseCookie(req.headers.cookie, COOKIE_NAME);
+    const session = sessionId ? validateSession(sessionId) : null;
+    if (!session) return res.status(401).json({ error: 'unauthorized' });
+    if (req.headers['x-csrf-token'] !== session.csrfToken) return res.status(403).json({ error: 'csrf' });
+
+    const { currentPassword, newPassword } = req.body || {};
+    if (!currentPassword || !newPassword) return res.status(400).json({ error: 'currentPassword and newPassword are required.' });
+    if (String(newPassword).length < 8) return res.status(400).json({ error: 'The new password must be at least 8 characters.' });
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(session.user.id);
+    if (!user || user.auth_provider !== 'local') return res.status(400).json({ error: 'This account signs in through the directory; change the password there.' });
+    if (!(await verifyPassword(user.password_hash, String(currentPassword)))) {
+      return res.status(400).json({ error: 'The current password is not correct.' });
+    }
+    if (String(newPassword) === String(currentPassword)) return res.status(400).json({ error: 'The new password must differ from the current one.' });
+
+    db.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?')
+      .run(await hashPassword(String(newPassword)), new Date().toISOString(), user.id);
+    logger.info(`[auth] password changed user=${user.username}`);
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }

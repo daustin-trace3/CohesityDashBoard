@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bot, Sparkles,
-  Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity, Crosshair, Waypoints, LayoutGrid, ChevronDown, HelpCircle, HeartPulse, Layers, Boxes, ArrowLeft,
+  Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, Activity, Crosshair, Waypoints, LayoutGrid, ChevronDown, HelpCircle, HeartPulse, Layers, Boxes, ArrowLeft,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import GlobalSearch from './GlobalSearch';
@@ -15,6 +15,7 @@ import { usePollerStatus } from '../api/usePollerStatus';
 import client from '../api/client';
 import { platforms as builtinPlatforms } from '../platforms/registry';
 import { usePlatforms } from '../platforms/PlatformsContext';
+import UserMenu from './UserMenu';
 import { useAuth } from '../auth/AuthContext';
 import { PlatformDropdown, PlatformRail, PlatformGrid, getSwitcherMode } from './PlatformSwitcher';
 import { useAiEnabled } from '../api/useAiEnabled';
@@ -871,22 +872,7 @@ export default function Layout() {
           {/* Signed-in user + sign out */}
           {user && (
             <div className="flex items-center gap-2 flex-shrink-0 pl-3 ml-1 border-l border-cohesity-border">
-              <span
-                className="text-xs text-ink-muted max-w-[120px] truncate hidden sm:block"
-                title={user.displayName || user.username}
-              >
-                {user.displayName || user.username}
-              </span>
-              {user.id != null && (
-                <button
-                  onClick={logout}
-                  title="Sign out"
-                  aria-label="Sign out"
-                  className="flex items-center justify-center h-8 w-8 rounded-lg border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer"
-                >
-                  <LogOut size={15} />
-                </button>
-              )}
+              <UserMenu user={user} logout={logout} />
             </div>
           )}
         </header>

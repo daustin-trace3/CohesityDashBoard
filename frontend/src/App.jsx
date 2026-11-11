@@ -28,6 +28,7 @@ import EstateAdvisorPage from './pages/ops/EstateAdvisorPage';
 import ErrorBoundary from './components/ErrorBoundary';
 import LicenseGate from './components/LicenseGate';
 import LoginPage from './pages/LoginPage';
+import ChangePasswordPage from './pages/ChangePasswordPage';
 import { ToastProvider } from './components/ui/Toaster';
 import GlobalLoadingBar from './components/ui/GlobalLoadingBar';
 import { SearchContext, PlatformContext, useSearch, usePlatform } from './context';
@@ -50,6 +51,7 @@ function AppRoutes() {
     <Suspense fallback={null}>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/change-password" element={<ChangePasswordPage />} />
         <Route path="/" element={<Layout />}>
           <Route index element={<LandingRedirect />} />
           <Route path="ops" element={withBoundary(<OpsMonitorPage />)} />
