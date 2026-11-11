@@ -17,7 +17,8 @@
 
 .PARAMETER Roots
   Top-level backend deps whose runtime closure is vendored. Default = the deps
-  added on the auth/RBAC branch plus the @aws-sdk/client-* clients. better-sqlite3
+  added on the auth/RBAC branch, the SSO deps (jose for OIDC, @node-saml/node-saml
+  for SAML) plus the @aws-sdk/client-* clients. better-sqlite3
   and argon2 are always excluded (native; compiled on the RHEL target).
 
 .PARAMETER BackendOnly
@@ -46,6 +47,7 @@ param(
   # Windows -> RHEL.
   [string[]]$Roots = @(
     'argon2', 'multer', 'nodemailer', 'yauzl',
+    'jose', '@node-saml/node-saml',
     '@aws-sdk/client-cloudwatch', '@aws-sdk/client-compute-optimizer',
     '@aws-sdk/client-cost-explorer', '@aws-sdk/client-dynamodb',
     '@aws-sdk/client-ec2', '@aws-sdk/client-ecr', '@aws-sdk/client-ecs',
